@@ -1,0 +1,170 @@
+"""教育モードのキー割り当て(仕様書4-1: 利用者が変更できる)。
+
+config/education_keys.json に保存する。無ければ初期値で作る。
+この段階ではキーボードのみ。コントローラーは後の段階で同じ「操作名→入力」の
+形に載せる(PyQt6にゲームパッドの入力機能が無く、別ライブラリの導入が要るため)。
+
+キー名はQtの表記(Qt.Key の名前から "Key_" を除いたもの。例: "Left", "Z", "Space")。
+修飾キーは "Shift+R" のように "+" で前置する(Shift/Ctrl/Alt)。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PyQt6 import QtCore, QtGui
+
+from uedock.paths import config_dir
+
+KEYS_PATH = config_dir() / "tetris_education_keys.json"
+
+# 操作名 → 説明(設定画面や一覧表示に使う)
+ACTIONS: dict[str, str] = {
+    "move_left": "左へ移動",
+    "move_right": "右へ移動",
+    "rotate_ccw": "左回転",
+    "rotate_cw": "右回転",
+    "soft_drop": "ソフトドロップ(接地まで落とす。固定しない)",
+    "hard_drop": "ハードドロップ(固定)",
+    "hold": "ホールド",
+    "undo": "一手戻す",
+    "reset_same": "同一配列でリセット",
+    "reset_new": "別配列でリセット",
+    "cycle_candidate": "次の候補",
+    "screenshot": "画像を保存",
+    "toggle_hints": "提示の表示/非表示",
+    "toggle_priority": "テンプレ優先/AI優先",
+}
+
+# 初期割り当て
+DEFAULT_BINDINGS: dict[str, str] = {
+    "move_left": "Left",
+    "move_right": "Right",
+    "rotate_ccw": "Z",
+    "rotate_cw": "X",
+    "soft_drop": "Down",
+    "hard_drop": "Space",
+    "hold": "C",
+    "undo": "Backspace",
+    "reset_same": "R",
+    "reset_new": "Shift+R",
+    # 仮の初期キー(設定ファイルで変更できる)
+    "cycle_candidate": "F2",
+    "screenshot": "F12",
+    "toggle_hints": "F3",
+    "toggle_priority": "F4",
+}
+
+_MODIFIERS = {
+    "Shift": QtCore.Qt.KeyboardModifier.ShiftModifier,
+    "Ctrl": QtCore.Qt.KeyboardModifier.ControlModifier,
+    "Alt": QtCore.Qt.KeyboardModifier.AltModifier,
+}
+
+
+def load_bindings(path: Path | None = None) -> dict[str, str]:
+    """保存済みの割り当てを読む。無い・壊れている・不足している項目は初期値で補う。"""
+    path = KEYS_PATH if path is None else path  # 呼んだ時点の置き場所(テストで差し替えられる)
+    bindings = dict(DEFAULT_BINDINGS)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            for action in ACTIONS:
+                value = data.get(action)
+                if isinstance(value, str) and value:
+                    bindings[action] = value
+    except (OSError, ValueError):
+        pass
+    return bindings
+
+
+def save_bindings(bindings: dict[str, str], path: Path | None = None) -> None:
+    path = KEYS_PATH if path is None else path  # 呼んだ時点の置き場所(テストで差し替えられる)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(bindings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def key_event_name(event: QtGui.QKeyEvent) -> str | None:
+    """キーイベントを "Shift+R" のような割り当て用の名前にする。修飾キー単独ならNone。"""
+    key = QtCore.Qt.Key(event.key())
+    name = key.name.removeprefix("Key_")
+    if name in ("Shift", "Control", "Alt", "Meta", "unknown"):
+        return None
+    prefix = "".join(f"{label}+" for label, flag in _MODIFIERS.items() if event.modifiers() & flag)
+    return prefix + name
+
+
+def action_for(bindings: dict[str, str], event_name: str) -> str | None:
+    """キー名に割り当てられた操作名。無ければNone。"""
+    for action, key_name in bindings.items():
+        if key_name == event_name:
+            return action
+    return None
+
+
+# ---- 押しっぱなしの連続入力(キーリピート)の設定 ----
+# OSのキーリピートに頼らず独自に設ける
+# (OSの設定次第で単押しでも2マス動いていた)。キーボードとコントローラー共通。
+REPEAT_PATH = config_dir() / "tetris_education_repeat.json"
+# 連続入力が始まるまで / 左右移動の繰り返しの間隔 / ソフトドロップの繰り返しの間隔
+# ソフトドロップはもっと速く: 左右移動と別に設定し、
+# 押しっぱなしにしたらすぐ(待ち時間なしで)この間隔で降り続ける。
+# 左右移動とソフトドロップ(下移動)で、リピート開始と間隔をそれぞれ設定する。
+# ソフトドロップのリピート開始(soft_delay_ms)の既定は、以前の動き(押してすぐ自分の間隔で降り続ける)と同じ値
+DEFAULT_REPEAT = {"delay_ms": 170, "interval_ms": 50, "soft_delay_ms": 20, "soft_interval_ms": 20}
+REPEAT_LIMITS = {"delay_ms": (50, 1000), "interval_ms": (0, 500), "soft_delay_ms": (0, 1000), "soft_interval_ms": (0, 500)}
+
+
+def load_repeat(path: Path | None = None) -> dict[str, int]:
+    path = REPEAT_PATH if path is None else path  # 呼んだ時点の置き場所(テストで差し替えられる)
+    settings = dict(DEFAULT_REPEAT)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for key, (low, high) in REPEAT_LIMITS.items():
+            value = data.get(key) if isinstance(data, dict) else None
+            if isinstance(value, int) and low <= value <= high:
+                settings[key] = value
+    except (OSError, ValueError):
+        pass
+    return settings
+
+
+def save_repeat(settings: dict[str, int], path: Path | None = None) -> None:
+    path = REPEAT_PATH if path is None else path  # 呼んだ時点の置き場所(テストで差し替えられる)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---- 表示の設定(提示の表示/非表示、テンプレ優先/AI優先) ----
+# トグルで切り替え、次回も同じ状態で開く
+VIEW_PATH = config_dir() / "tetris_education_view.json"
+# ren_analysis: 無限中あけRENのAI解析。use_plugin_engine: シミュレーターのAIをプラグインの思考エンジンにする
+DEFAULT_VIEW = {"show_hints": True, "prefer_ai": False, "ren_analysis": True, "use_plugin_engine": False}
+
+
+# 候補欄に出す候補の表示/非表示。キーは "show:<候補のID>"(既定は表示)
+SHOW_PREFIX = "show:"
+
+
+def load_view(path: Path | None = None) -> dict[str, bool]:
+    path = VIEW_PATH if path is None else path  # 呼んだ時点の置き場所(テストで差し替えられる)
+    settings = dict(DEFAULT_VIEW)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for key in DEFAULT_VIEW:
+            value = data.get(key) if isinstance(data, dict) else None
+            if isinstance(value, bool):
+                settings[key] = value
+        for key, value in (data.items() if isinstance(data, dict) else ()):
+            if key.startswith(SHOW_PREFIX) and isinstance(value, bool):
+                settings[key] = value
+    except (OSError, ValueError):
+        pass
+    return settings
+
+
+def save_view(settings: dict[str, bool], path: Path | None = None) -> None:
+    path = VIEW_PATH if path is None else path  # 呼んだ時点の置き場所(テストで差し替えられる)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")

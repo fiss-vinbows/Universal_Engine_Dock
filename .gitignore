@@ -1,0 +1,39 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# 利用者の設定(ゲーム種別・エンジンの選択と登録、プラグインの有効・無効、ウィンドウ)
+config/
+
+# 実機デバッグの生成物(画面キャプチャを含むため公開しない)
+debug_logs/
+debug_frames*/
+crash_log.txt
+
+# 同梱する思考エンジンの実行ファイル(配布物を作る時に置く)
+engines/
+
+# 名前が「_」で始まるプラグインは手元だけのもの
+**/plugins/_*/
+
+# PyInstaller のビルド成果物
+build/
+dist/
+# 作業フォルダに展開した配布物
+UniversalEngineDock*/
+
+# エディタ・ツール
+.claude/
+
+# テスト用のゲーム画面の画像(リポジトリには入れない)
+tests/**/fixtures/*.png
+tests/**/fixtures/*.jpg
+# ゲーム画面のマスを切り出したテスト用のデータ
+tests/**/fixtures/cell_patches_*.npz
+
+# 実機の配ぷよのデータ。無ければシミュレーターの配ぷよモードを出さない
+assets/haipuyo.txt.gz
+
+# 手元の画像・録画(ゲームの画面を含む)
+input/

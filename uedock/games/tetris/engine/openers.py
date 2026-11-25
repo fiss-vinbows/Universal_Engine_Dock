@@ -1,0 +1,945 @@
+"""開幕テンプレ: 盤面図(opener_data.py)から、実際のミノ順に合わせた手順をその場で組み立てる。
+
+テンプレの解説ページは「Iが早いこと」「JとLの早い方で左右を決める」のように
+ミノ順の条件と分岐で説明されているが、各巡の「最終形の図」さえあれば、
+実際に出てきた順番に対して
+  ・今のミノを図の位置へ置けるか(下に支えがあり、上が空いていて
+    ハードドロップで入る)
+  ・置けなければホールドして、ホールドしていたミノを置けるか
+を全探索すれば手順が決まる(1巡7手なので探索は一瞬)。分岐の手順データを
+手入力する必要がなく、写し間違いの余地も減る。
+
+【巡をまたぐ進め方】
+図には「既に置いてあるブロック('c')」が描かれている。ある巡の図を置き
+終えたら、次はその盤面(既存ブロック)に一致する図を同じテンプレの中から
+探し、実際のミノ順で組めるものを選ぶ。理想形/通常形/妥協形、左右反転、
+Tスピンを打つ図などは、すべてこの「既存ブロックの一致」で自然に選ばれる。
+'U'(Tスピンで入れるT)は、図の他のミノをすべて置いてから最後に入れる。
+"""
+
+from __future__ import annotations
+
+import itertools
+import time
+from dataclasses import dataclass, replace
+
+from uedock.games.tetris.engine.opener_data import EDUCATION_SOURCE_FORMS, OPENER_SOURCE_FORMS
+from uedock.games.tetris.engine.opener_data_ren import REN_SOURCE_FORMS
+from uedock.games.tetris.engine.opener_data_td import TD_EXTRA_SOURCE_FORMS
+
+BOARD_ROWS = 20
+BOARD_COLS = 10
+
+Cells = tuple[tuple[int, int], ...]
+
+_ALL_PIECES = "IOTSZJL"
+
+
+@dataclass(frozen=True)
+class FormItem:
+    piece: str
+    cells: Cells
+    # ハードドロップでは入らない(既存ブロックの張り出しの下に入れる。
+    # Tスピンや回転入れ)。図の既存ブロックが同じ列の上にある場合に立てる。
+    spin: bool = False
+    # 図の他のミノをすべて置いた後にだけ置く('U'で描かれたTスピン)。
+    last: bool = False
+    # 置いたときに自分の行がすべて揃って消える場合だけ置ける(別図から合流した
+    # TSTのT。_mark_required_items参照)。
+    must_clear: bool = False
+    # 行をまたいで描かれたミノ: この行(図の座標)が揃って消えた後に置く。
+    # テトリス堂の図は消える前の座標で描かれているため、間の行が消えた後に置くミノは分かれて見える
+    # (例: TSDで1行消えた後に置く3巡目のミノ)。消えた後は残りの手と同じく下へずらすとつながる。
+    gap_rows: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True)
+class OpenerForm:
+    section: str
+    existing: frozenset[tuple[int, int]]  # 既に置いてあるべきブロック
+    items: tuple[FormItem, ...]  # この図で置くミノ
+    text: str
+    # ハードドロップで入らなくても回転入れで置けるとページに明記されているミノ種。
+    tuck_pieces: frozenset[str] = frozenset()
+    # Tスピン(砲)の形を作るのに必要なミノの番号(itemsの添字)。Noneなら全部。
+    # 図どおり全部は置けないミノ順でも、ここに含まれるミノだけ置ければ
+    # TST/TSDは打てる(パフェは諦める)。
+    required: frozenset[int] | None = None
+
+    def is_spin_only(self) -> bool:
+        return all(item.spin for item in self.items)
+
+    def spin_rows(self) -> frozenset[int]:
+        return frozenset(r for item in self.items if item.spin for r, _c in item.cells)
+
+
+# ページの注記で「後から回転入れできる」とされているミノ。
+# (テンプレ名, セクション名) → ミノ種。左右反転の図では J↔L・S↔Z を読み替える。
+# 迷走砲: 「2巡目の%Lは%Zを置いた後でも回転入れすることができます。(左回転)」
+_TUCK_NOTES: dict[tuple[str, str], frozenset[str]] = {
+    ("迷走砲", "理想形 > 2巡目"): frozenset("L"),
+    ("迷走砲", "通常形 > %O>%Sの場合"): frozenset("L"),
+    ("迷走砲", "通常形 > %S>%Oの場合"): frozenset("L"),
+}
+_MIRROR_PIECE = {"J": "L", "L": "J", "S": "Z", "Z": "S"}
+
+
+@dataclass(frozen=True)
+class OpenerTemplate:
+    name_ja: str
+    name_en: str
+    source_url: str
+    forms: tuple[OpenerForm, ...]
+
+
+def _components(cells: list[tuple[int, int]]) -> list[Cells]:
+    """4近傍で連結した塊に分ける。"""
+    remaining = set(cells)
+    groups: list[Cells] = []
+    while remaining:
+        start = min(remaining)
+        stack = [start]
+        group = {start}
+        remaining.discard(start)
+        while stack:
+            r, c = stack.pop()
+            for nr, nc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                if (nr, nc) in remaining:
+                    remaining.discard((nr, nc))
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+        groups.append(tuple(sorted(group)))
+    return groups
+
+
+def parse_form(text: str, section: str = "", tuck_pieces: frozenset[str] = frozenset()) -> OpenerForm | None:
+    """テキスト盤面図を解釈する。ミノが4マスの塊になっていない図はNone。"""
+    lines = [line for line in text.splitlines() if line]
+    if not lines or any(len(line) != BOARD_COLS for line in lines):
+        return None
+    existing: set[tuple[int, int]] = set()
+    by_symbol: dict[str, list[tuple[int, int]]] = {}
+    for i, line in enumerate(lines):
+        row = BOARD_ROWS - len(lines) + i
+        for col, ch in enumerate(line):
+            if ch == "-":
+                continue
+            if ch in "cC":
+                existing.add((row, col))
+            else:
+                by_symbol.setdefault(ch, []).append((row, col))
+    items: list[FormItem] = []
+    for symbol, cells in by_symbol.items():
+        if symbol == "U":
+            piece, last = "T", True
+        elif symbol.upper() in _ALL_PIECES:
+            piece, last = symbol.upper(), False
+        else:
+            return None
+        groups = _components(cells)
+        whole = [g for g in groups if len(g) == 4]
+        split = _merge_split_groups([g for g in groups if len(g) != 4], piece)
+        if split is None:
+            return None
+        for group in whole:
+            # 既存ブロックが同じ列の上にあるミノは、図の上ではハードドロップで
+            # 入らない(TSDのT、回転入れのLなど)。
+            group_set = set(group)
+            blocked = any(
+                (rr, c) in existing for r, c in group for rr in range(r) if (rr, c) not in group_set
+            )
+            items.append(FormItem(piece, group, spin=last or blocked, last=last))
+        for group, gaps in split:
+            # 間の行が消えた後の盤面で、上に既存ブロックがあるか(回転入れ・Tスピン)
+            shifted = _drop_rows(set(group), gaps)
+            above = _drop_rows({cell for cell in existing if cell[0] not in gaps}, gaps)
+            blocked = any((rr, c) in above for r, c in shifted for rr in range(r) if (rr, c) not in shifted)
+            items.append(FormItem(piece, group, spin=last or blocked, last=last, gap_rows=gaps))
+    if not items:
+        return None
+    # 行をまたぐミノの間の行は、図の完成形で揃って消える行でなければならない
+    final = set(existing) | {cell for item in items for cell in item.cells}
+    for item in items:
+        if any(not all((r, c) in final for c in range(BOARD_COLS)) for r in item.gap_rows):
+            return None
+    return OpenerForm(
+        section=section, existing=frozenset(existing), items=tuple(items), text=text, tuck_pieces=tuck_pieces
+    )
+
+
+def _drop_rows(cells: set[tuple[int, int]], rows) -> set[tuple[int, int]]:
+    """行rowsが消えた後の座標(消えた行より上のマスは、その数だけ下へずれる)。rows上のマスは捨てる。"""
+    return {(r + sum(1 for g in rows if g > r), c) for r, c in cells if r not in rows}
+
+
+def _is_piece_shape(cells: set[tuple[int, int]], piece: str) -> bool:
+    """4マスが、そのミノのどれかの向きの形か。"""
+    from uedock.games.tetris.education.rules import _SHAPES  # 循環importを避ける
+
+    r0, c0 = min(r for r, _c in cells), min(c for _r, c in cells)
+    norm = {(r - r0, c - c0) for r, c in cells}
+    for shape in _SHAPES[piece]:
+        sr, sc = min(r for r, _c in shape), min(c for _r, c in shape)
+        if {(r - sr, c - sc) for r, c in shape} == norm:
+            return True
+    return False
+
+
+def _merge_split_groups(groups: list[Cells], piece: str) -> list[tuple[Cells, frozenset[int]]] | None:
+    """4マスにならない塊を組み合わせ、行をまたいで描かれたミノ(と間の行)にする。組めなければNone。
+
+    組み合わせた塊の、上下の間にある行(どの塊のマスも無い行)を取り除くと、そのミノの形につながるもの。
+    """
+    if not groups:
+        return []
+    first, rest = groups[0], groups[1:]
+    for size in range(1, len(rest) + 1):
+        for combo in _combinations(rest, size):
+            cells = set(first).union(*combo)
+            if len(cells) != 4:
+                continue
+            rows = {r for r, _c in cells}
+            gaps = frozenset(r for r in range(min(rows), max(rows)) if r not in rows)
+            if not gaps or not _is_piece_shape(_drop_rows(cells, gaps), piece):
+                continue
+            others = [g for g in rest if g not in combo]
+            merged = _merge_split_groups(others, piece)
+            if merged is not None:
+                return [(tuple(sorted(cells)), gaps), *merged]
+    return None
+
+
+def _combinations(items: list, size: int):
+    import itertools
+
+    return itertools.combinations(items, size)
+
+
+def mirror_form_text(text: str) -> str:
+    """左右反転した図(列を反転し、J↔L・S↔Zを入れ替える)。"""
+    table = str.maketrans("jlszJLSZ", "ljzsLJZS")
+    return "\n".join(line[::-1].translate(table) for line in text.splitlines())
+
+
+def _with_required(form: OpenerForm, spin_rows: frozenset[int]) -> OpenerForm:
+    """Tスピンで消える行に掛かるミノを「必要なミノ」として印を付けた図を返す。"""
+    required = frozenset(i for i, item in enumerate(form.items) if any(r in spin_rows for r, _c in item.cells))
+    if not required or len(required) == len(form.items):
+        return form
+    return OpenerForm(form.section, form.existing, form.items, form.text, form.tuck_pieces, required)
+
+
+def _mark_required_items(forms: list[OpenerForm]) -> list[OpenerForm]:
+    """2巡目の図どおりに全部置けないミノ順でも、
+    TST/TSDの形(砲)までは組み切る。Tスピンで消える行に掛かるミノだけを
+    必須にし、その上に積むミノ(パフェ用)は置ければ置く扱いにする。
+
+    Tスピンが同じ図に描かれている場合はその行から、はちみつ砲のように
+    Tスピンだけ別の図(U)になっている場合は同じセクションのその図から、
+    消える行を求める。
+
+    別図のTスピンは、その図のTを「途中でも置けるスピン手」
+    として合流させる(ただし行が揃って消えるときだけ置ける: must_clear)。はちみつ砲の2巡目でミノ順 O L S J T Z I・HOLD=Jの
+    とき、Tは図に無く、HOLDのJもZの後でないと置けないためTを消費する手が
+    なく、手順が組めずに提示を放棄していた。実際にはTが来た時点でTSTを
+    打ち、消えた後にZ・I・Jを置いてパフェまで組めていた。合流させると
+    O L S J T(spin) Z I J(H) の手順が見つかる。消去後の残り手順の座標は
+    実行側(_check_opener_progress)が下へずらす。
+    """
+    result: list[OpenerForm] = []
+    spin_only = [f for f in forms if f.is_spin_only()]
+    for form in forms:
+        if form.is_spin_only():
+            result.append(form)
+            continue
+        if any(item.spin for item in form.items):
+            result.append(_with_required(form, form.spin_rows()))
+            continue
+        # 同じセクションの、この図の続きにあたるTスピン図(既存ブロックが
+        # この図の完成形に含まれるもの)を探す。
+        completed = set(form.existing) | {cell for item in form.items for cell in item.cells}
+        partner = next(
+            (u for u in spin_only if u.section == form.section and u.existing <= completed), None
+        )
+        if partner is None:
+            result.append(form)
+            continue
+        merged = OpenerForm(
+            form.section,
+            form.existing,
+            form.items + tuple(FormItem(it.piece, it.cells, spin=True, last=False, must_clear=True) for it in partner.items),
+            form.text,
+            form.tuck_pieces,
+        )
+        result.append(_with_required(merged, partner.spin_rows()))
+    return result
+
+
+def _build_templates(sources=OPENER_SOURCE_FORMS) -> tuple[OpenerTemplate, ...]:
+    templates = []
+    for name_ja, name_en, url, source_forms in sources:
+        forms: list[OpenerForm] = []
+        seen: set[str] = set()
+        for section, text in source_forms:
+            tuck = _TUCK_NOTES.get((name_ja, section), frozenset())
+            for mirrored, variant in ((False, text), (True, mirror_form_text(text))):
+                if variant in seen:
+                    continue
+                seen.add(variant)
+                pieces = frozenset(_MIRROR_PIECE.get(p, p) for p in tuck) if mirrored else tuck
+                form = parse_form(variant, section, pieces)
+                if form is not None:
+                    forms.append(form)
+        templates.append(OpenerTemplate(name_ja, name_en, url, tuple(_mark_required_items(forms))))
+    return tuple(templates)
+
+
+OPENER_TEMPLATES: tuple[OpenerTemplate, ...] = _build_templates()
+# 教育モードだけで使うテンプレ(開幕パフェ積み・DPC)。画像認識側の選択には使わない。
+EDUCATION_TEMPLATES: tuple[OpenerTemplate, ...] = _build_templates(EDUCATION_SOURCE_FORMS)
+# TDTD向けに集めたTD系テンプレ(opener_data_td.py)。シミュレーターとTDTDで使い、
+# 支援モードの対局開始時のテンプレ選び(choose_opener)には入れない(従来の選択を変えない)
+TD_EXTRA_TEMPLATES: tuple[OpenerTemplate, ...] = _build_templates(TD_EXTRA_SOURCE_FORMS)
+# 種3の中あけRENを積む練習(opener_data_ren.py)。シミュレーターだけで使う
+REN_TEMPLATES: tuple[OpenerTemplate, ...] = _build_templates(REN_SOURCE_FORMS)
+
+
+@dataclass(frozen=True)
+class OpenerStep:
+    piece: str
+    cells: Cells
+    use_hold: bool  # ホールドしてから置く(置くミノは操作中のミノではない)
+    spin: bool = False
+
+
+def _can_hard_drop(placed: set[tuple[int, int]], cells: Cells) -> bool:
+    """cellsの位置へ、上から真っ直ぐ落として置けるか。
+
+    ・マスが空いている
+    ・各マスの上方(同じ列でそのマスより上)にブロックがない(潜り込み不要)
+    ・少なくとも1マスが床か既存ブロックの上に載る
+    """
+    cell_set = set(cells)
+    for r, c in cells:
+        if (r, c) in placed:
+            return False
+        for rr in range(r):
+            if (rr, c) in placed and (rr, c) not in cell_set:
+                return False
+    return any(r + 1 >= BOARD_ROWS or (r + 1, c) in placed for r, c in cells)
+
+
+def _can_rest(placed: set[tuple[int, int]], cells: Cells) -> bool:
+    """cellsが空いていて、床か既存ブロックの上に載るか(入れ方は問わない)。"""
+    if any(cell in placed for cell in cells):
+        return False
+    return any(r + 1 >= BOARD_ROWS or (r + 1, c) in placed for r, c in cells)
+
+
+def _srs_reachable(placed: set[tuple[int, int]], piece: str, cells: Cells, spin_entry: bool) -> bool:
+    from uedock.games.tetris.engine.srs_reach import reachable20  # 循環importを避けるため遅延import
+
+    return reachable20(frozenset(placed), piece, tuple(cells), spin_entry)
+
+
+# 見えていない袋の残り(plan_formのpending)を使うのは、この数まで(来る順をすべて試すため)
+PENDING_LIMIT = 2
+
+
+def plan_form(
+    form: OpenerForm,
+    sequence: list[str],
+    hold: str | None,
+    placed: set[tuple[int, int]] | None = None,
+    allow_tuck: bool | None = None,
+    can_hold: bool = True,
+    discards: int = 0,
+    deadline: float | None = None,
+    pending: frozenset[str] = frozenset(),
+) -> list[OpenerStep] | None:
+    """実際のミノ順(先頭が操作中のミノ)とホールドに対して、図を組む手順を返す。
+
+    各手番で「操作中のミノを置く」か「ホールドして、ホールドにあったミノ
+    (空なら次のミノ)を置く」のどちらかを選ぶ。Tスピンの手('U')は他のミノを
+    すべて置いた後にだけ置ける。図のミノをすべて置ける手順が無ければNone。
+
+    allow_tuck: 張り出しの下へ回転入れするミノ(form.tuck_pieces)を許すか。
+    Noneなら、まずハードドロップだけで組める手順を探し、無ければ許して
+    探し直す。テトリス堂の図には「Lは左回転で後入れできる」のように
+    ハードドロップでは入らない置き方を前提にした形があるため(迷走砲の
+    2巡目)。ページに明記のないミノは、入れ方が実際にあるか分からない
+    (張り出しの下へ横から入れられるとは限らない)ので許さない。
+
+    can_hold: この手番でまだHOLDできるか(HOLD済みなら最初の手はHOLDしない)。
+
+    discards: 図に無いミノを図の外へ置いてよい数(_discard_spots)。TDTD
+    (袋がずれたまま組み直すTD)では袋ごとにミノが1つ余り、HOLDも繰り越しのミノでふさがっているため、
+    図に無いミノを逃がす先がなく2巡目・TSDの図を組めなかった(40通り中21通りはHOLDが空なら組めた)。
+    TDTDのときだけ余りのミノを図の外へ置く手を許す(置く数が少ない手順を優先)。置く数を0から1つずつ
+    増やして探す(置ける位置が多く、一度に許すと組めない図の探索に数秒かかったため)。
+    deadline: time.monotonic()がこれを超えたら、余りを置く探索をやめて組めない扱い(None)にする
+    (余りを4つまで許すと1手番に80秒かかる局面があった)。
+
+    pending: まだ見えていないが、見えているミノの直後に必ず来るミノ(今の袋の残り。来る順は分からない)。
+    TDTDでは袋が1つずれるため、2巡目に要るミノ
+    (はちみつ砲のO)がまだ見えず、1手置くまで図を始められなかった。袋の残りがどの順で来ても組めるときだけ
+    組めるとし、その順の1つの手順を返す(来た順に合わせて組み直すのは呼び出し側。PENDING_LIMIT個まで)。
+    """
+    if pending:
+        if len(pending) > PENDING_LIMIT:
+            return None
+        plans = [
+            plan_form(form, [*sequence, *order], hold, placed, allow_tuck, can_hold, discards, deadline)
+            for order in itertools.permutations(sorted(pending))
+        ]
+        return None if any(plan is None for plan in plans) else plans[0]
+    if discards > 0 and allow_tuck is None:
+        for allowed in range(discards + 1):
+            if deadline is not None and time.monotonic() > deadline:
+                return None
+            steps = plan_form(form, sequence, hold, placed, None, can_hold, -allowed - 1, deadline)
+            if steps is not None:
+                return steps
+        return None
+    if discards < 0:
+        discards = -discards - 1  # 上の段階的な探索から呼ばれた(この数ちょうどまで)
+    if allow_tuck is None:
+        # まずハードドロップだけで組める順番を探し、無ければSRSで実際に入れられる
+        # 回転入れ(張り出しの下へ差し込む等)を全ミノに許して探し直す。
+        # 以前は回転入れをページに明記のあるミノ
+        # (form.tuck_pieces)だけに限っていた(入れられるか判定できなかったため)。
+        # そのため「Jの下へSを回転入れ」前提でしか組めないミノ順(はちみつ砲の
+        # 2巡目 J L T I S Z O・HOLD=L)で図が見つからずAIに切り替わっていた。
+        # 入れられない位置はSRSの到達判定で防ぐ。
+        strict = plan_form(form, sequence, hold, placed, allow_tuck=False, can_hold=can_hold, discards=discards, deadline=deadline)
+        if strict is None:
+            strict = plan_form(form, sequence, hold, placed, allow_tuck=True, can_hold=can_hold, discards=discards, deadline=deadline)
+        if strict is not None or form.required is None:
+            return strict
+        # 図どおりに全部は置けない。Tスピンに必要なミノだけの図で探し直す
+        # (パフェは諦めて砲の形までは組む)。
+        reduced = OpenerForm(
+            form.section,
+            form.existing,
+            tuple(item for i, item in enumerate(form.items) if i in form.required),
+            form.text,
+            form.tuck_pieces,
+        )
+        return plan_form(reduced, sequence, hold, placed, can_hold=can_hold, discards=discards, deadline=deadline)
+
+    placed_cells = set(placed) if placed is not None else set(form.existing)
+    items = form.items
+    last_count = sum(1 for it in items if it.last)
+    # 分かっているミノ順の先に「種類不明のミノ」を2つ足す。図の最後の手が
+    # ホールドしていたミノなら、次に来るミノが何であれホールドと入れ替えて
+    # 置けるため(例: TをホールドしておいてTスピンを最後に打つ)、既知の
+    # ミノ順だけでは手順が組めない形を救う。不明のミノ自体は置けない。
+    sequence = [*sequence, "?", "?"]
+
+    def placeable(item: FormItem, current_placed: set[tuple[int, int]], done: frozenset[int]) -> bool:
+        if item.last and len(done) < len(items) - last_count:
+            return False
+        if item.gap_rows:
+            # 行をまたいで描かれたミノ: 間の行がすべて揃って(消えて)から、消えた後の盤面で判定する
+            if not all((r, c) in current_placed for r in item.gap_rows for c in range(BOARD_COLS)):
+                return False
+            full = {r for r, _c in current_placed if all((r, c) in current_placed for c in range(BOARD_COLS))}
+            board, cells = _drop_rows(current_placed, full), tuple(sorted(_drop_rows(set(item.cells), full)))
+            if item.spin:
+                return _can_rest(board, cells) and _srs_reachable(board, item.piece, cells, item.piece == "T")
+            if _can_hard_drop(board, cells):
+                return True
+            return allow_tuck and _can_rest(board, cells) and _srs_reachable(board, item.piece, cells, False)
+        if item.must_clear:
+            # 合流させたTSTのTを、形ができる前
+            # (2巡目の最初)に穴へ置く手を推奨していた。Tスピンにならず教育用として
+            # 誤り。Tスピンで消す行がすべて揃うときだけ置ける。TSTを打てる順が
+            # 無いミノ順(例: T J Z O L I・HOLD=J)では図は組めない扱い(Noneで
+            # テンプレを終え、AIの推奨手へ)。
+            after = current_placed | set(item.cells)
+            rows = {r for r, _c in item.cells}
+            if not all((r, c) in after for r in rows for c in range(BOARD_COLS)):
+                return False
+        if item.spin:
+            # 図の時点で張り出しの下にあるミノ(TSD等)。以前は
+            # 「マスが空いていて支えがある」だけで置ける扱いにしていたため、屋根が
+            # 早すぎて入らない・屋根が無くてTスピンにならない順番の手を推奨して
+            # いた。通常SRSで出現位置から実際に入れられるか(Tは最後の操作が回転
+            # で収まるか=Tスピンになるか)を確かめる(uedock.games.tetris.engine.srs_reach)。
+            return _can_rest(current_placed, item.cells) and _srs_reachable(
+                current_placed, item.piece, item.cells, item.piece == "T"
+            )
+        if _can_hard_drop(current_placed, item.cells):
+            return True
+        return (
+            allow_tuck
+            and _can_rest(current_placed, item.cells)
+            and _srs_reachable(current_placed, item.piece, item.cells, False)
+        )
+
+    def candidates(piece: str, current_placed: set[tuple[int, int]], done: frozenset[int]) -> list[int]:
+        return [
+            i
+            for i, item in enumerate(items)
+            if i not in done and item.piece == piece and placeable(item, current_placed, done)
+        ]
+
+    # 組める手順が複数あるときは、回転入れ(ハード
+    # ドロップでは入らずソフトドロップが要る置き方)の少ない手順を優先する(操作
+    # ミスしにくい)。以前は最初に見つかった手順を採用していたため、ハードドロップ
+    # で置ける位置があるのに回転入れの位置を推奨することがあった。Tスピンの手は
+    # 避けられないので数えない。同じ回数なら従来どおり操作中のミノを先に試す順。
+    # 状態(何番目のミノか・HOLD・置いた図のミノ)ごとに結果を覚えて探索を抑える。
+    # 回転入れの数が同じなら、テトリス
+    # (4行同時消去)を含む順番を優先する。以前は操作中のミノを先に置く順を選んだため、Iを最後に
+    # 回せばテトリスでパフェになる図でも、先にIを差し込んで2行だけ消す手順を案内していた。
+    # 評価は (回転入れの数, -テトリスの数) の小さい方。パフェ探索のテトリス優先と同じ考え方。
+    memo: dict[tuple, tuple[tuple[int, int], list[OpenerStep]] | None] = {}
+
+    def tuck_cost(item: FormItem, current_placed: set[tuple[int, int]]) -> int:
+        if item.gap_rows and not item.spin:
+            full = {r for r, _c in current_placed if all((r, c) in current_placed for c in range(BOARD_COLS))}
+            return 0 if _can_hard_drop(_drop_rows(current_placed, full), tuple(_drop_rows(set(item.cells), full))) else 1
+        return 0 if item.spin or _can_hard_drop(current_placed, item.cells) else 1
+
+    def is_tetris(item: FormItem, current_placed: set[tuple[int, int]]) -> bool:
+        """このミノで4行が同時に揃う(図の座標のまま。揃った行は置いた後も残っている扱い)。"""
+        after = current_placed | set(item.cells)
+        rows = {r for r, _c in item.cells}
+        return sum(1 for r in rows if all((r, c) in after for c in range(BOARD_COLS))) == 4
+
+    def search(
+        index: int,
+        hold_piece: str | None,
+        current_placed: set[tuple[int, int]],
+        done: frozenset[int],
+        dumped: frozenset[tuple[int, int]] = frozenset(),
+        left: int = discards,
+    ):
+        if len(done) == len(items):
+            return (0, 0, 0), []
+        if index >= len(sequence):
+            return None
+        if deadline is not None and dumped is not None and left < discards and time.monotonic() > deadline:
+            raise _PlanTimeout
+        key = (index, hold_piece, done, dumped)
+        if key in memo:
+            return memo[key]
+        current = sequence[index]
+        best: tuple[tuple[int, int, int], list[OpenerStep]] | None = None
+        # これ以上良くならない評価(図の外に置かない、回転入れ0、残りのIがすべてテトリス)。見つかったら探索を打ち切る。
+        ideal = (0, 0, -sum(1 for i, it in enumerate(items) if i not in done and it.piece == "I"))
+
+        def consider(i: int, piece: str, use_hold: bool, next_index: int, next_hold: str | None) -> None:
+            nonlocal best
+            item = items[i]
+            rest = search(next_index, next_hold, current_placed | set(item.cells), done | {i}, dumped, left)
+            if rest is None:
+                return
+            cost = (rest[0][0], rest[0][1] + tuck_cost(item, current_placed), rest[0][2] - is_tetris(item, current_placed))
+            if best is None or cost < best[0]:
+                best = (cost, [OpenerStep(piece, item.cells, use_hold, item.spin)] + rest[1])
+
+        def consider_dump(piece: str, use_hold: bool, next_index: int, next_hold: str | None) -> None:
+            nonlocal best
+            todo = {cell for i, it in enumerate(items) if i not in done for cell in it.cells}
+            for cells in _discard_spots(current_placed, piece, todo):
+                rest = search(next_index, next_hold, current_placed | set(cells), done, dumped | set(cells), left - 1)
+                if rest is None:
+                    continue
+                cost = (rest[0][0] + 1, rest[0][1], rest[0][2])
+                if best is None or cost < best[0]:
+                    best = (cost, [OpenerStep(piece, cells, use_hold)] + rest[1])
+
+        # 1) 操作中のミノをそのまま置く
+        for i in candidates(current, current_placed, done):
+            consider(i, current, False, index + 1, hold_piece)
+            if best is not None and best[0] == ideal:
+                break
+        # 2) ホールドして、出てきたミノを置く
+        if (best is None or best[0] != ideal) and (can_hold or index > 0):
+            if hold_piece is None:
+                if index + 1 < len(sequence):
+                    nxt = sequence[index + 1]
+                    for i in candidates(nxt, current_placed, done):
+                        consider(i, nxt, True, index + 2, current)
+                        if best is not None and best[0] == ideal:
+                            break
+            else:
+                for i in candidates(hold_piece, current_placed, done):
+                    consider(i, hold_piece, True, index + 1, current)
+                    if best is not None and best[0] == ideal:
+                        break
+        # 3) 図に無いミノ(余り)を図の外へ置く(TDTDのときだけ)。図の中に置ける手順が見つかっていれば試さない
+        if best is None and left > 0 and current != "?":
+            consider_dump(current, False, index + 1, hold_piece)
+            if hold_piece not in (None, "?") and (can_hold or index > 0):
+                consider_dump(hold_piece, True, index + 1, current)
+        memo[key] = best
+        return best
+
+    try:
+        found = search(0, hold, placed_cells, frozenset())
+    except _PlanTimeout:
+        return None
+    return None if found is None else found[1]
+
+
+class _PlanTimeout(Exception):
+    """plan_formの余りを置く探索が時間切れ。"""
+
+
+# TDTDで次の図を選ぶときの時間の上限(秒)。余りを置く探索はこれを超えたら打ち切る
+TDTD_TIME_LIMIT_SEC = 0.5
+# TDTDの2巡目以降で、余りのミノを図の外へ置いてよい数(1つの図につき)。TSDだけに縮めるとパフェ用の
+# ミノが4つほど余る
+TDTD_DISCARDS = 4
+# 余りのミノを置く位置の候補の数(低い位置から)
+_DISCARD_SPOTS = 6
+# 余りのミノを置いてよいのは盤面の上から数えてこの段より下(上端付近に積み上げない)
+_DISCARD_TOP_ROW = 4
+
+
+def _discard_spots(
+    placed: set[tuple[int, int]], piece: str, todo: set[tuple[int, int]]
+) -> list[tuple[tuple[int, int], ...]]:
+    """余りのミノを図の外へ置ける位置(plan_formのdiscards)。
+
+    真上から落とすだけで置け(回転入れ不要)、これから置く図のマスに重ならず、その真上の列にも
+    掛からず(図のマスへ落とせなくなる)、行を揃えない(行が消えると図の座標がずれる)位置。
+    盤面の上端付近には置かない。
+    """
+    from uedock.games.tetris.education.rules import _SHAPES  # 循環importを避ける
+
+    spots: list[tuple[tuple[int, int], ...]] = []
+    seen: set[tuple[tuple[int, int], ...]] = set()
+    for shape in _SHAPES[piece]:
+        width = max(c for _r, c in shape) + 1
+        for col in range(-min(c for _r, c in shape), BOARD_COLS - width + 1 + min(c for _r, c in shape)):
+            row = -min(r for r, _c in shape)
+            cells = tuple(sorted((row + r, col + c) for r, c in shape))
+            if any(not (0 <= cc < BOARD_COLS) for _rr, cc in cells) or any(cell in placed for cell in cells):
+                continue
+            # 一番下まで落とす
+            while all(r + 1 < BOARD_ROWS and (r + 1, c) not in placed for r, c in cells):
+                cells = tuple((r + 1, c) for r, c in cells)
+            if cells in seen or min(r for r, _c in cells) < _DISCARD_TOP_ROW or set(cells) & todo:
+                continue
+            # これから置く図のマスの真上(同じ列の上方)には置かない(その下へ落とせなくなる)
+            if any(c == tc and r < tr for r, c in cells for tr, tc in todo):
+                continue
+            after = placed | set(cells)
+            if any(all((r, c) in after for c in range(BOARD_COLS)) for r in {r for r, _c in cells}):
+                continue
+            seen.add(cells)
+            spots.append(cells)
+    # 低い位置(下の段)から_DISCARD_SPOTS個まで(置き場所の候補が多いと探索が数秒かかったため)
+    spots.sort(key=lambda cells: (-max(r for r, _c in cells), -min(r for r, _c in cells)))
+    return spots[:_DISCARD_SPOTS]
+
+
+def known_sequence(
+    current_piece: str | None,
+    next_queue: tuple[str, ...],
+    hold_piece: str | None = None,
+    bag_position: int | None = None,
+) -> list[str] | None:
+    """操作ミノ+NEXT5枠から、分かる範囲のミノ順を返す。
+
+    bag_position: 「最後にNEXTから配られたミノ」(直前にHOLDしていなければ
+    操作ミノ、HOLDした直後ならHOLD欄のミノ)の、対局開始からの通し番号。
+    Noneなら袋(7-bag)の位置が不明。
+
+    7個目は、袋の位置が分かっていて(bag_positionが7の倍数=そのミノが
+    袋の先頭)、その袋の6個が判明しているときだけ確定する。以前は
+    「6種類がすべて異なれば同じ袋」とみなして補っていたが、この推論は
+    成立しない。例: 前袋 T S Z J L I O / 次袋 T S Z J I L O で、前袋末尾の
+    Iを操作中・NEXTが次袋先頭のO T S Z Jだと6種類はすべて異なるが、
+    7個目は不足しているLではなく次袋のI。袋の境目をまたいだ観測に
+    誤った7個目を渡すと、組めない図を提示してしまう。
+    """
+    if current_piece is None or len(next_queue) != 5:
+        return None
+    seen = [current_piece, *next_queue]
+    if not set(seen) <= set(_ALL_PIECES):
+        return None
+    if bag_position is None or bag_position % 7 != 0 or len(set(next_queue)) != 5:
+        return seen
+    # 袋の先頭のミノは、操作ミノかHOLD欄のどちらか(HOLDした直後なら後者)。
+    # NEXT5個と同じ袋なので種類が重ならないはず。どちらか一方に絞れた
+    # ときだけ、袋の残り1種類を7個目として確定する。
+    heads = {p for p in (current_piece, hold_piece) if p is not None and p not in next_queue}
+    if len(heads) != 1:
+        return seen
+    (missing,) = set(_ALL_PIECES) - heads - set(next_queue)
+    return [*seen, missing]
+
+
+def choose_form(
+    template: OpenerTemplate,
+    board_cells: set[tuple[int, int]],
+    sequence: list[str],
+    hold: str | None,
+    can_hold: bool = True,
+    discards: int = 0,
+    pending: frozenset[str] = frozenset(),
+) -> tuple[OpenerForm, list[OpenerStep]] | None:
+    """今の盤面(おじゃまを除く占有)に既存ブロックが一致し、ミノ順で組める図を返す。
+
+    pending: まだ見えていない袋の残り(plan_form参照)。
+
+    discards: 余りのミノを図の外へ置いてよい数(plan_form参照。TDTDのとき)。0より大きいときは、
+    前の図で図の外に置いたミノが盤面に残っているので、図に無いマスが4マス以上あっても、これから置く
+    図のマスに重ならなければ一致とみなし、実際の盤面の上で手順を組む。
+
+    一致は「図の既存ブロックがすべて盤面にあり、盤面にそれ以外のマスが
+    1ミノ分未満(3マス以下)」で判定する。置いたばかりのミノが光って
+    余分なマスとして読まれた程度なら次の図へ進めるようにするため。余分な
+    マスは一時的な読み取りとみなし、手順の探索では無視する。
+    """
+    target = frozenset(board_cells)
+    # 置くミノが多い図(ホールドに残さず7つ置く形)を優先する。迷走砲のように
+    # 「Zをホールドしておく形」と「Zも置く形」の両方が載っている場合、
+    # 2巡目以降の図は後者を前提にしているため。
+    # 同じ優先度(置くミノの数)の図が複数組めるときは、
+    # 回転入れ(ソフトドロップが要る置き方)の少ない図を選ぶ。以前は最初に組めた図を
+    # 採用していたため、ハードドロップで置ける別の図があるのに回転入れの多い図を
+    # 推奨していた。回転入れの数が同じなら従来どおり並び順が先の図。
+    # 優先度を下げた図(is_low_priority)は、他に組める図が無いときだけ使う。
+    def rank(f: OpenerForm) -> tuple[bool, int]:
+        return (is_low_priority(template.name_ja, f.section), -len(f.items))
+
+    best: tuple[int, tuple[bool, int], OpenerForm, list[OpenerStep]] | None = None
+    deadline = time.monotonic() + TDTD_TIME_LIMIT_SEC if discards else None
+    # 余りを置く数ごとに、全部の図を試す(少ない数で組める図を先に見つける。図ごとに0〜上限まで試すと、
+    # 組めない図で時間の上限を使い切り、余り1つで組める次の図を試せなかった)
+    for allowed in range(discards + 1):
+        if best is not None or (deadline is not None and time.monotonic() > deadline):
+            break
+        for form in sorted(template.forms, key=rank):
+            if best is not None and rank(form) > best[1]:
+                break
+            if form.is_spin_only():
+                # Tスピンだけの図: 消える行の既存ブロックが揃い、スロットが空いて
+                # いれば打てる(上に積むミノが図と違っていても構わない)。
+                rows = form.spin_rows()
+                needed = {cell for cell in form.existing if cell[0] in rows}
+                slot = {cell for item in form.items for cell in item.cells}
+                if not needed <= target or slot & target:
+                    continue
+            elif not form.existing <= target:
+                continue
+            elif discards:
+                # 図の外に置いたミノが、Tスピン(砲)に必要な図のマスに重なっている。パフェ用のマスは重なってもよい
+                # (TDTDはTSDまで打ち切れればよい。plan_formが砲だけの図に縮める)
+                needed = [it for i, it in enumerate(form.items) if form.required is None or i in form.required]
+                if (target - form.existing) & {cell for item in needed for cell in item.cells}:
+                    continue
+            elif len(target - form.existing) >= 4:
+                continue
+            placed = set(target) if discards else None
+            steps = plan_form(
+                form, sequence, hold, placed=placed, can_hold=can_hold, discards=-allowed - 1 if discards else 0,
+                deadline=deadline, pending=pending,
+            )
+            if steps is not None:
+                cost = tuck_count(form.existing, steps)
+                if best is None or cost < best[0]:
+                    best = (cost, rank(form), form, steps)
+                if cost == 0:
+                    break
+    return None if best is None else (best[2], best[3])
+
+
+# 優先度を下げる図(テンプレ名, セクション名)。他に組める図が無いときだけ使う。
+# 迷走砲の通常形(%S>%O)の2巡目は置くミノが多いため「置くミノの多い図を優先」で理想形より先に選ばれていた
+# (ブラウザー版の実画面: 理想形の2巡目も回転入れ無しで組める局面)。
+_LOW_PRIORITY_SECTIONS = frozenset({("迷走砲", "通常形 > %S>%Oの場合")})
+
+
+def is_low_priority(template_name: str, section: str) -> bool:
+    return (template_name, section) in _LOW_PRIORITY_SECTIONS
+
+
+def tuck_count(existing: frozenset[tuple[int, int]] | set[tuple[int, int]], steps: list[OpenerStep]) -> int:
+    """手順のうち、ハードドロップでは入らずソフトドロップ(回転入れ)が要る手の数。
+
+    Tスピンの手は避けられないので数えない。ライン消去は考えない(図の座標のまま)。
+    """
+    placed = set(existing)
+    count = 0
+    for step in steps:
+        if not step.spin and not _can_hard_drop(placed, step.cells):
+            count += 1
+        placed |= set(step.cells)
+    return count
+
+
+# 支援モード(実戦)では、迷走砲は1巡目のIを左に置く図だけを使う。
+# 左右反転(Iが右)の形はTの移動が要り、実戦ではあまり使われない。シミュレーターは対象外。
+_ASSIST_NO_MIRROR_TEMPLATES = frozenset({"迷走砲"})
+_MIRRORED_ONLY_TEXTS: dict[str, frozenset[str]] = {
+    name_ja: frozenset(mirror_form_text(text) for _s, text in forms) - {text for _s, text in forms}
+    for name_ja, _en, _url, forms in OPENER_SOURCE_FORMS
+    if name_ja in _ASSIST_NO_MIRROR_TEMPLATES
+}
+
+
+def _assist_template(template: OpenerTemplate) -> OpenerTemplate:
+    """支援モードで使わない図(左右反転の迷走砲)を除いたテンプレを返す。"""
+    mirrored = _MIRRORED_ONLY_TEXTS.get(template.name_ja)
+    if not mirrored:
+        return template
+    return replace(template, forms=tuple(f for f in template.forms if f.text not in mirrored))
+
+
+def carried_pieces(form: OpenerForm) -> frozenset[str]:
+    """DPCの図で繰り越したミノの候補(図の大文字。Tスピンの'U'と既存ブロックの'C'は除く)。
+
+    大文字が2種類ある図(S-13bのT・S等)は、どちらかを繰り越していれば使える扱いにする。
+    大文字の無い図(文献で繰り越しのOを小文字で描いたO-02等)は、パターン名の先頭(O-02のO)
+    で判断する。J・Sの系統は左右反転の図も同じ名前なのでJ/L・S/Zのどちらでもよい。
+    """
+    letters = frozenset(ch for ch in form.text if ch.isupper() and ch not in "UC")
+    if letters:
+        return letters
+    group = form.section[:1]
+    return frozenset({"J": "JL", "S": "SZ"}.get(group, group))
+
+
+# 支援モードでも、DPCを組める条件のときに限りDPCを提示する。
+DPC_TEMPLATE_NAME = "DPC"
+
+
+def choose_dpc(
+    sequence: list[str], hold: str | None, carried: str | None = None, can_hold: bool = True
+) -> tuple[OpenerTemplate, OpenerForm, list[OpenerStep]] | None:
+    """パフェ直後(空の盤面・HOLDに前の袋のミノを繰り越し)から組めるDPCの組み方の図と手順。
+
+    袋の区切りがそろっているかは呼び出し側が確かめる。図は、繰り越したミノ(図の大文字)が
+    HOLDのミノと一致するものだけ使う(シミュレーターのstartable_templateと同じ条件)。
+    戻り値のテンプレは続きの図(既存ブロックのある図)も含むので、続きの探索にそのまま使える。
+
+    carried: 繰り越したミノ(前の袋のミノ)。省略時はHOLDのミノ。パフェ直後に
+    HOLDして操作ミノ(袋の先頭)とHOLDを入れ替えると、繰り越したミノは操作ミノ側に来る。以前はHOLDのミノ
+    だけで図を選んだため、組めるDPCを案内しなかった。can_hold: この手番でまだHOLDできるか。
+    """
+    if hold is None:
+        return None
+    if carried is None:
+        carried = hold
+    template = next((t for t in EDUCATION_TEMPLATES if t.name_ja == DPC_TEMPLATE_NAME), None)
+    if template is None:
+        return None
+    forms = tuple(
+        f for f in template.forms if f.existing or (carried in carried_pieces(f) and not f.is_spin_only())
+    )
+    template = replace(template, forms=forms)
+    chosen = choose_form(template, set(), sequence, hold, can_hold=can_hold)
+    if chosen is None:
+        return None
+    form, steps = chosen
+    return template, form, steps
+
+
+# TDTD: TD系テンプレで8段パフェを取った後(HOLDに前の袋のミノを1個
+# 繰り越し、袋の区切りがずれた状態)で、ずれたままTD系テンプレを1巡目から組み直す。
+# TD系(積み→TST→TSD): 既存の4種とオリーブ積み、TDTD向けに集めたテンプレ(TD_EXTRA_TEMPLATES)。
+# 余った1ミノの組み合わせによって、はちみつ砲・迷走砲・山岳積み2号以外が向く
+TD_TEMPLATE_NAMES = frozenset({"迷走砲", "はちみつ砲", "山岳積み2号", "ガムシロ積み", "オリーブ積み"}) | frozenset(
+    t.name_ja for t in TD_EXTRA_TEMPLATES
+)
+
+
+def is_tdtd_form(template: OpenerTemplate, form: OpenerForm) -> bool:
+    """TDTDで使える図か(TD系テンプレの1巡目の図=既存ブロックの無い図)。"""
+    return template.name_ja in TD_TEMPLATE_NAMES and not form.existing and not form.is_spin_only()
+
+
+def choose_tdtd(
+    sequence: list[str], hold: str | None, can_hold: bool = True, excluded: frozenset[str] = frozenset()
+) -> tuple[OpenerTemplate, OpenerForm, list[OpenerStep]] | None:
+    """パフェ直後(空の盤面・HOLDに前の袋のミノを繰り越し)から、袋がずれたまま組めるTD系テンプレ。
+
+    袋の区切り(DPCを組める状態か)は呼び出し側が確かめる。1巡目の図だけを、見えているミノとHOLDで
+    組めるか確かめる(choose_openerと同じく回転入れの少ないもの)。戻り値のテンプレは続きの図も含む。
+    """
+    if hold is None:
+        return None
+    best: tuple[int, OpenerTemplate, OpenerForm, list[OpenerStep]] | None = None
+    for template in OPENER_TEMPLATES + TD_EXTRA_TEMPLATES:
+        if template.name_ja not in TD_TEMPLATE_NAMES or template.name_ja in excluded:
+            continue
+        template = _assist_template(template)
+        first = replace(template, forms=tuple(f for f in template.forms if f.existing or is_tdtd_form(template, f)))
+        chosen = choose_form(replace(first, forms=tuple(f for f in first.forms if not f.existing)), set(), sequence, hold, can_hold=can_hold)
+        if chosen is None:
+            continue
+        form, steps = chosen
+        cost = tuck_count(form.existing, steps)
+        if best is None or cost < best[0]:
+            best = (cost, first, form, steps)
+        if cost == 0:
+            break
+    return None if best is None else (best[1], best[2], best[3])
+
+
+def choose_opener(
+    sequence: list[str],
+    hold: str | None = None,
+    board_cells: set[tuple[int, int]] | None = None,
+    excluded: frozenset[str] = frozenset(),
+) -> tuple[OpenerTemplate, OpenerForm, list[OpenerStep]] | None:
+    """組めるテンプレを探し、最初に見つかったものと図・手順を返す(既定は空の盤面)。
+
+    excluded: 使わないテンプレの名前(支援モードの設定画面で非表示にしたもの)。
+    """
+    cells = board_cells if board_cells is not None else set()
+    # 1巡目はソフトドロップ(回転入れ)を極力避ける。
+    # ハードドロップだけで組めるテンプレがあればそれを選び(並び順が先のもの)、
+    # どれも回転入れが要る場合だけ、回転入れの最も少ないテンプレを選ぶ。
+    best: tuple[int, OpenerTemplate, OpenerForm, list[OpenerStep]] | None = None
+    for template in OPENER_TEMPLATES:
+        if template.name_ja in excluded:
+            continue
+        template = _assist_template(template)
+        chosen = choose_form(template, cells, sequence, hold)
+        if chosen is None:
+            continue
+        form, steps = chosen
+        cost = tuck_count(form.existing, steps)
+        if best is None or cost < best[0]:
+            best = (cost, template, form, steps)
+        if cost == 0:
+            break
+    return None if best is None else (best[1], best[2], best[3])
+
+
+def full_rows_after(cells: set[tuple[int, int]], step_cells: Cells) -> list[int]:
+    """ミノを置いた後に揃う(消える)行。"""
+    result = set(cells) | set(step_cells)
+    return [r for r in range(BOARD_ROWS) if all((r, c) in result for c in range(BOARD_COLS))]
+
+
+def shift_cells_for_clears(cells: Cells, cleared_rows: list[int]) -> Cells:
+    """消えた行より上のマスを、消えた行数ぶん下へずらす。
+
+    図は「消える前」の座標で描かれている(TSDのTと、その後に置くミノが
+    同じ図にある)ため、消去が起きたら残りの手の座標を実際の盤面に合わせる。
+    """
+    return tuple((r + sum(1 for fr in cleared_rows if fr > r), c) for r, c in cells)
+
+
+def apply_step(cells: set[tuple[int, int]], step_cells: Cells) -> set[tuple[int, int]]:
+    """盤面(占有マス集合)にミノを置き、揃った行を消して詰めた結果を返す。"""
+    result = set(cells) | set(step_cells)
+    full_rows = full_rows_after(cells, step_cells)
+    if not full_rows:
+        return result
+    shifted: set[tuple[int, int]] = set()
+    for r, c in result:
+        if r in full_rows:
+            continue
+        drop = sum(1 for fr in full_rows if fr > r)
+        shifted.add((r + drop, c))
+    return shifted
