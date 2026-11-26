@@ -46,11 +46,25 @@ Universal Engine Dock(以下「本体」)に、自作・公開のぷよぷよ・
 1. メイン画面の「エンジンの登録…」を押し、ゲーム種別を選ぶ
 2. 「追加…」を押し、次の順に答える
    - **実行ファイル** — エンジンの exe
-   - **名前** — 一覧に出す名前。同じゲーム種別の中で重ならないもの(同梱・プラグインのエンジンの名前は使えない)
+   - **名前** — 一覧に出す名前。同じゲーム種別の中で重ならないもの(プラグインのエンジンの名前は使えない)
    - **起動引数** — 無ければ空のまま
    - **評価の重み** — 重みのファイルを渡すか(下の表。分からなければ「いいえ」)
 3. 「Save」を押す(押さないと登録されません)
 4. メイン画面のサイドの「思考エンジン」で選ぶ
+
+### 同梱のエンジンを新しい版に差し替える
+
+同梱の YamaNEKO(ぷよ)と KasugAI(テトリス)も、初めて起動した時から登録の一覧に入っています。
+配布物に入っているものを使っている間は、名前の後に「(同梱)」と出ます。
+
+- **新しい版に差し替える** — 一覧で選んで「変更…」を押し、新しい版の実行ファイルを選ぶ。
+  名前は変わらないので、メイン画面の選択はそのまま残ります。重みは「いいえ」で今のまま使います
+- **配布物のものに戻す** — 「同梱に戻す」を押す。消してしまった時も戻ります
+- **消す** — 「削除」を押す。消した同梱のエンジンは、次に起動しても入れ直しません
+
+シミュレーターも、登録にある YamaNEKO・KasugAI を使います。
+YamaNEKO だけの設定(配ぷよ読み・CPU の使用など)と KasugAI だけの開幕の指定は、
+名前をそのままにし、実行ファイルの名前を同梱のものと同じ始まり(`yamaneko`・`tetrisai-bot`)にした時に使えます。
 
 | | テトリス | ぷよ |
 |---|---|---|
@@ -83,11 +97,17 @@ Python では `-u` を付けるか、`print(..., flush=True)` を使ってくだ
 ```json
 {
   "engines": [
-    {"game": "tetris", "name": "My Bot", "exe": "C:/bots/mybot.exe", "args": ["--threads", "4"], "weights": ""},
-    {"game": "puyo", "name": "My Puyo AI", "exe": "C:/bots/mypuyo.exe", "args": [], "weights": ""}
-  ]
+    {"game": "puyo", "name": "YamaNEKO", "exe": "engines/yamaneko/engine/bin/yamaneko-bridge.exe", "args": [], "weights": ""},
+    {"game": "puyo", "name": "My Puyo AI", "exe": "C:/bots/mypuyo.exe", "args": [], "weights": ""},
+    {"game": "tetris", "name": "KasugAI", "exe": "engines/kasugai/tetrisai-bot.exe", "args": [], "weights": "engines/kasugai/run16.toml"},
+    {"game": "tetris", "name": "My Bot", "exe": "C:/bots/mybot.exe", "args": ["--threads", "4"], "weights": ""}
+  ],
+  "bundled": ["puyo/YamaNEKO", "tetris/KasugAI"]
 }
 ```
+
+- 相対パスは、本体のフォルダ(`UniversalEngineDock.exe` のあるフォルダ)から見ます
+- `bundled` は、登録へ入れた同梱のエンジンの印です。消すと、次に起動した時に同梱のエンジンを入れ直します
 
 ## 3. テトリスの規格(TBP)
 

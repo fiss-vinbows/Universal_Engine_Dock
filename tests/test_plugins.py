@@ -97,6 +97,30 @@ class TestPluginLoader(unittest.TestCase):
         self.assertEqual([p.id for p in PluginManager.load().plugins], ["a", "b"])
 
 
+    def test_changes_on_disk_after_loading(self) -> None:
+        """読み込んだ後に足した・書き換えた・消したプラグインに気づく(再起動を勧めるため)。"""
+        import os
+
+        self.assertFalse(PluginManager().changed_on_disk(), "plugins/ から読み込んでいないのに変わったと言った")
+        folder = write_plugin("swap", SWAP_PLUGIN)
+        manager = PluginManager.load()
+        self.assertFalse(manager.changed_on_disk())
+        added = write_plugin("added", 'from uedock.plugin_api import Plugin\nPLUGIN = Plugin(id="added", name="足した")\n')
+        self.assertTrue(manager.changed_on_disk(), "足したのに気づかない")
+        manager = PluginManager.load()
+        self.assertEqual(sorted(p.id for p in manager.plugins), ["added", "swap"])
+        # 書き換えた(同じ大きさでも時刻で分かる)。プラグインのフォルダの中の別のファイルも見る
+        later = os.stat(folder / "plugin.py").st_mtime + 10
+        os.utime(folder / "plugin.py", (later, later))
+        self.assertTrue(manager.changed_on_disk(), "書き換えたのに気づかない")
+        manager = PluginManager.load()
+        (folder / "helper.py").write_text("X = 1\n", encoding="utf-8")
+        self.assertTrue(manager.changed_on_disk())
+        manager = PluginManager.load()
+        (added / "plugin.py").unlink()
+        self.assertTrue(manager.changed_on_disk(), "消したのに気づかない")
+
+
 class TestBuiltinModes(unittest.TestCase):
     def test_puyo_and_tetris_with_bundled_engines(self) -> None:
         modes = {m.id: m for m in builtin_modes()}

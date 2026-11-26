@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tests.config_isolation as isolation  # noqa: E402
 from PyQt6 import QtWidgets  # noqa: E402
 
-from uedock.engine_registry import EngineEntry, Registry, SideSelection  # noqa: E402
+from uedock.engine_registry import EngineEntry, Registry, SideSelection, portable_path  # noqa: E402
 from uedock.game_mode import LAYOUT_SOLO, NO_GAME, EngineSpec, GameMode, SimulatorEntry  # noqa: E402
 from uedock.plugin_loader import PluginManager  # noqa: E402
 from uedock.ui import main_window  # noqa: E402
@@ -74,6 +74,9 @@ class MainWindowTest(unittest.TestCase):
         self.addCleanup(window.close)
         started: list[FakeSession] = []
         window.modes = fake_modes(started)
+        # 起動した時に本物の同梱のエンジンを登録へ入れているので、偽のゲームモードの同梱のエンジンで入れ直す
+        window.registry = Registry(list(registry.engines) if registry is not None else [])
+        window._add_bundled_engines()
         window._rebuild_mode_buttons()
         window._refresh_sides()
         return window, started
@@ -219,6 +222,44 @@ class EngineDialogTest(unittest.TestCase):
         self.assertIn("分からなければ「いいえ」", plain)
         self.assertNotIn("cold_clear_beginner", plain)
         self.assertIn("cold_clear_beginner.json", weights_question("tetris", "C:/x/cold-clear-2.exe"))
+
+    def test_bundled_engines_are_registered_at_start(self) -> None:
+        window = MainWindow(PluginManager())
+        self.addCleanup(window.close)
+        saved = Registry.load()
+        self.assertEqual(sorted(saved.bundled), ["puyo/YamaNEKO", "tetris/KasugAI"])
+        self.assertEqual([e.name for e in saved.for_game("puyo")], ["YamaNEKO"])
+        self.assertEqual([e.name for e in saved.for_game("tetris")], ["KasugAI"])
+        # 登録へ入れた同梱のエンジンの名前は、消した後に新しい版で登録し直せる
+        self.assertEqual(window._reserved_engine_names(), {"puyo": set(), "tetris": set()})
+
+    def test_change_and_restore_bundled_engine(self) -> None:
+        modes = fake_modes([])
+        registry = Registry()
+        registry.add_bundled(modes.values())
+        dialog = EngineRegistryDialog(registry, modes)
+        bundled = portable_path(EXE)  # 本体のフォルダの中なら相対パス
+        self.assertEqual(dialog.list.item(0).text(), f"YamaNEKO (同梱)  —  {bundled}")
+        # 新しい版に差し替える: 名前はそのまま、印は消える
+        entry = dialog.engines[0]
+        self.assertIn("見つかりません", dialog.change_engine(entry, "無い.exe", [], ""))
+        new_exe = Path(__file__)
+        self.assertIsNone(dialog.change_engine(entry, str(new_exe), ["--x"], ""))
+        self.assertEqual((entry.name, entry.exe, entry.args), ("YamaNEKO", str(new_exe), ["--x"]))
+        self.assertNotIn("(同梱)", dialog.list.item(0).text())
+        self.assertEqual(registry.engines[0].exe, bundled, "保存する前に元の登録を書き換えた")
+        # 同梱に戻す
+        self.assertEqual(dialog.restore_bundled("puyo"), ["YamaNEKO"])
+        self.assertEqual((dialog.engines[0].exe, dialog.engines[0].args), (bundled, []))
+        self.assertIn("(同梱)", dialog.list.item(0).text())
+        # 消してから戻すと、そのゲーム種別の先頭に入る
+        self.assertIsNone(dialog.add_engine("puyo", "ama", str(EXE)))
+        dialog.list.setCurrentRow(0)
+        dialog._remove()
+        self.assertEqual([e.name for e in dialog.engines if e.game == "puyo"], ["ama"])
+        dialog.restore_bundled("puyo")
+        self.assertEqual([e.name for e in dialog.engines if e.game == "puyo"], ["YamaNEKO", "ama"])
+        self.assertEqual(dialog.restored, {"puyo/YamaNEKO"})
 
     def test_add_per_game_with_reserved_names(self) -> None:
         modes = fake_modes([])

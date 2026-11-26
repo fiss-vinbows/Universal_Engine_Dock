@@ -144,8 +144,10 @@ class MainWindow(QtWidgets.QWidget):
         self.registry = Registry.load()
         self.selection = SideSelection.load()
         self.modes: dict[str, GameMode] = all_modes(self.plugins)
+        self._add_bundled_engines()
         self.sessions: list[AssistSession] = []
         self._simulators: list[QtWidgets.QWidget] = []  # 開いたシミュレーター(閉じるまで参照を持つ)
+        self._restarting = False  # 起動し直している途中(新しいものを2つ起動しない)
         # プラグインの拡張(uedock/extension.py)。{プラグインの ID: 拡張}。呼ぶのは有効なプラグインの分だけ
         self.extensions = self.plugins.make_extensions()
         self._locked_widgets: list[QtWidgets.QWidget] = []  # 支援モードの間は触れなくする項目(拡張が足したもの)
@@ -536,10 +538,19 @@ class MainWindow(QtWidgets.QWidget):
 
     # ---- 登録・プラグイン ----
 
+    def _add_bundled_engines(self) -> None:
+        """同梱のエンジンを登録へ入れる(初めて起動した時と、同梱のエンジンを持つプラグインを有効にした時)。"""
+        if self.registry.add_bundled(self.modes.values()):
+            try:
+                self.registry.save()
+            except OSError:
+                pass  # 書けない場所に置かれていても、同梱のエンジンは登録に入れる前と同じように選べる
+
     def _reserved_engine_names(self) -> dict[str, set[str]]:
-        """登録に使えない名前(同梱・プラグインのエンジン)。"""
+        """登録に使えない名前(プラグインのエンジンと、登録へまだ入れていない同梱のエンジン)。"""
         return {
-            mode.id: {e.name for e in mode.builtin_engines} | {e.name for e in self.plugins.engines(mode.id)}
+            mode.id: {e.name for e in mode.builtin_engines if not self.registry.has_added(mode.id, e.name)}
+            | {e.name for e in self.plugins.engines(mode.id)}
             for mode in self.modes.values()
         }
 
@@ -547,6 +558,7 @@ class MainWindow(QtWidgets.QWidget):
         dialog = EngineRegistryDialog(self.registry, self.modes, self._reserved_engine_names(), self)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             self.registry.engines = dialog.engines
+            self.registry.bundled = list(dict.fromkeys(self.registry.bundled + sorted(dialog.restored)))
             self.registry.save()
             self._refresh_sides()
 
@@ -556,8 +568,31 @@ class MainWindow(QtWidgets.QWidget):
             save_disabled(dialog.disabled)
             self.plugins.disabled = set(dialog.disabled)
             self.modes = all_modes(self.plugins)  # プラグインのゲームモード・エンジンが増減する
+            self._add_bundled_engines()
             self._rebuild_mode_buttons()
             self._refresh_sides()
+            if dialog.restart_requested:
+                # 「プラグイン」画面を閉じ終えてから、いつもの画面の処理の中で起動し直す
+                QtCore.QTimer.singleShot(0, self.restart)
+
+    def restart(self) -> bool:
+        """Universal Engine Dock を起動し直す(足した・書き換えたプラグインを読み込むため)。起動できなければ理由を出して False。
+
+        新しいものを先に起動し、この画面を閉じる。新しいものは、こちらが終わるのを待ってから始まる。
+        """
+        from ..app import spawn_restart
+
+        if self._restarting:
+            return True  # 続けて呼ばれても、新しいものは1つだけ起動する
+        self._restarting = True
+        error = spawn_restart()
+        if error is not None:
+            self._restarting = False
+            QtWidgets.QMessageBox.warning(self, "再起動", f"起動し直せませんでした: {error}")
+            return False
+        self.close()
+        QtWidgets.QApplication.quit()
+        return True
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802
         self.stop_assist(show=False)

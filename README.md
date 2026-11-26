@@ -66,6 +66,7 @@ Universal Engine Dock は、**ゲームとエンジンの間の口を揃える**
 - [思考エンジンの規格と登録のしかた](docs/ENGINE_SPEC.md) — 自作・公開のエンジンを足す時の通信の形式、サンプル
 
 同梱の思考エンジンは、ぷよの YamaNEKO とテトリスの KasugAI です(どちらも MIT License)。ほかのエンジンは「エンジンの登録…」から登録できます。
+同梱の2つも登録の一覧に入っているので、エンジンの新しい版が出た時は「変更…」で実行ファイルを差し替えられます。
 テトリスは、[Cold Clear 2](https://github.com/MinusKelvin/cold-clear-2) が、手を加えずそのまま動くことを確かめています
 ([登録のしかた](docs/ENGINE_SPEC.md#cold-clear-2-を使う))。
 YamaNEKO は、盤面処理に [ama](https://github.com/citrus610/ama) の core(MIT License)を使っています。

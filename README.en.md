@@ -64,6 +64,7 @@ Manuals:
 - [Engine specification and registration](docs/ENGINE_SPEC.en.md) — the protocol for adding your own or public engines, with samples
 
 The bundled engines are YamaNEKO (Puyo) and KasugAI (Tetris), both under the MIT License. Others can be added from "Register engines…".
+The two bundled engines are also in the list of registered engines, so when a new version comes out, you can replace the executable with "Change…".
 For Tetris, [Cold Clear 2](https://github.com/MinusKelvin/cold-clear-2) is confirmed to work without any changes
 ([how to register it](docs/ENGINE_SPEC.en.md#using-cold-clear-2)).
 YamaNEKO uses the core of [ama](https://github.com/citrus610/ama) (MIT License) for board handling

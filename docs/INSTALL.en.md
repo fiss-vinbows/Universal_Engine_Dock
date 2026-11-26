@@ -69,6 +69,14 @@ These are not captured by screen capture. For streaming and recording, use "Show
 If there is no game window, press "Puyo calibration (capture board)" or "Tetris calibration (capture board)" and click the positions of the board, hold, next and so on as guided.
 Depending on the colors and borders of the video, it may not be read correctly.
 
+### Adding plugins
+
+1. Press "Plugins…" and open `plugins/` with "Open folder"
+2. Put the plugin's folder (the one with `plugin.py` inside) into `plugins/` as it is
+3. Press "Save and restart". Universal Engine Dock closes, starts again and loads the plugin
+
+Plugins are loaded at start, so putting one in the folder is not enough. If you open "Plugins…" after putting it there, the dock tells you so.
+
 ## 4. Troubleshooting
 
 | Symptom | What to check |
@@ -86,5 +94,7 @@ When you report a problem, turn on "Write recognition results and suggestions to
 
 ## 5. Updating and removing
 
-- **Update** — extract the new zip to another folder and copy `config/` if you want to keep your settings
+- **Update** — extract the new zip to another folder and copy `config/` if you want to keep your settings.
+  The bundled engines in the new folder are used (engines you replaced with "Change…" keep pointing where you chose)
+- **Update only an engine** — select it in "Register engines…" and press "Change…" ([details](ENGINE_SPEC.en.md#replacing-a-bundled-engine-with-a-new-version))
 - **Remove** — delete the whole folder. Nothing is written elsewhere, including the registry

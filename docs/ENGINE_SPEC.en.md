@@ -45,11 +45,25 @@ Requests come one at a time. For Puyo, the next request does not come until the 
 1. Press "Register engines…" in the main window and choose a game
 2. Press "Add…" and answer in this order
    - **Executable** — the exe of the engine
-   - **Name** — the name shown in the list. It must be unique within the game (names of bundled and plugin engines cannot be used)
+   - **Name** — the name shown in the list. It must be unique within the game (names of plugin engines cannot be used)
    - **Launch arguments** — leave empty if there are none
    - **Evaluation weights** — whether to pass a weights file (see the table below. "No" if unsure)
 3. Press "Save" (it is not registered until you do)
 4. Choose it in "Engine:" of a side in the main window
+
+### Replacing a bundled engine with a new version
+
+The bundled YamaNEKO (Puyo) and KasugAI (Tetris) are in the list of registered engines from the first start.
+While they use the files in the release, "(bundled)" is shown after the name.
+
+- **Use a new version** — select it in the list, press "Change…" and choose the executable of the new version.
+  The name stays the same, so the choices on the main window are kept. Answer "No" to keep the current weights
+- **Go back to the release's files** — press "Restore bundled". This also brings them back if you removed them
+- **Remove** — press "Remove". A removed bundled engine is not added again at the next start
+
+The simulators also use the registered YamaNEKO and KasugAI.
+Settings only for YamaNEKO (reading the real piece sequence, CPU use and so on) and the opener choice only for KasugAI work
+when you keep the name and the executable's name starts the same way as the bundled one (`yamaneko`, `tetrisai-bot`).
 
 | | Tetris | Puyo |
 |---|---|---|
@@ -82,11 +96,17 @@ Registrations are kept in `config/engines.json`. You may edit it directly while 
 ```json
 {
   "engines": [
-    {"game": "tetris", "name": "My Bot", "exe": "C:/bots/mybot.exe", "args": ["--threads", "4"], "weights": ""},
-    {"game": "puyo", "name": "My Puyo AI", "exe": "C:/bots/mypuyo.exe", "args": [], "weights": ""}
-  ]
+    {"game": "puyo", "name": "YamaNEKO", "exe": "engines/yamaneko/engine/bin/yamaneko-bridge.exe", "args": [], "weights": ""},
+    {"game": "puyo", "name": "My Puyo AI", "exe": "C:/bots/mypuyo.exe", "args": [], "weights": ""},
+    {"game": "tetris", "name": "KasugAI", "exe": "engines/kasugai/tetrisai-bot.exe", "args": [], "weights": "engines/kasugai/run16.toml"},
+    {"game": "tetris", "name": "My Bot", "exe": "C:/bots/mybot.exe", "args": ["--threads", "4"], "weights": ""}
+  ],
+  "bundled": ["puyo/YamaNEKO", "tetris/KasugAI"]
 }
 ```
+
+- Relative paths are seen from the dock's folder (the folder of `UniversalEngineDock.exe`)
+- `bundled` marks the bundled engines already added to the registration. If you delete it, the bundled engines are added again at the next start
 
 ## 3. Tetris protocol (TBP)
 

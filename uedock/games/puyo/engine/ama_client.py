@@ -59,7 +59,12 @@ def resolve_bridge_exe(bridge: str = "yamaneko") -> Path:
         return AMA_BRIDGE_EXE
     if bridge != "yamaneko":
         raise ValueError(f'bridge は "ama" か "yamaneko" です: {bridge!r}')
-    return YAMANEKO_BRIDGE_EXE
+    # 登録にある YamaNEKO(新しい版に差し替えていればそれ)。登録から消されていれば同梱のもの
+    from ....engine_registry import registered_engine
+    from ... import puyo
+
+    spec = registered_engine(puyo.MODE, puyo.YAMANEKO.name)
+    return YAMANEKO_BRIDGE_EXE if spec is None else spec.exe
 
 
 # ブリッジからの応答をこの秒数待っても届かない場合は応答不能とみなす。

@@ -72,16 +72,41 @@ def save_disabled(disabled: set[str], path: Path | None = None) -> None:
     path.write_text(json.dumps({"disabled": sorted(disabled)}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def plugin_files(folder: Path | None = None) -> dict[str, float]:
+    """置いてあるプラグインのファイル {plugins/ からの場所: 書き換えた時刻}。読み込んだ後に足した・書き換えたかを見る用。"""
+    folder = plugin_dir() if folder is None else folder
+    out: dict[str, float] = {}
+    if not folder.is_dir():
+        return out
+    for sub in (p for p in folder.iterdir() if p.is_dir() and (p / "plugin.py").exists()):
+        for path in sub.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            try:
+                out[path.relative_to(folder).as_posix()] = path.stat().st_mtime
+            except OSError:
+                pass
+    return out
+
+
 @dataclass
 class PluginManager:
     plugins: list[Plugin] = field(default_factory=list)
     disabled: set[str] = field(default_factory=set)
     errors: dict[str, str] = field(default_factory=dict)
+    # 読み込んだ時のプラグインのファイル(plugin_files)。None は plugins/ から読み込んでいない(テストなど)
+    files: dict[str, float] | None = None
+    folder: Path | None = None
 
     @classmethod
     def load(cls, folder: Path | None = None, config: Path | None = None) -> "PluginManager":
+        files = plugin_files(folder)  # 読み込む前に見る(読み込み中に書き換えられても、次に見た時に気づける)
         plugins, errors = discover(folder)
-        return cls(plugins, load_disabled(config), errors)
+        return cls(plugins, load_disabled(config), errors, files, folder)
+
+    def changed_on_disk(self) -> bool:
+        """読み込んだ後に、プラグインを足した・消した・書き換えたか(再起動すると反映される)。"""
+        return self.files is not None and plugin_files(self.folder) != self.files
 
     @property
     def enabled(self) -> list[Plugin]:

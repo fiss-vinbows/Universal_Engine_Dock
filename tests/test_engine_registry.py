@@ -69,6 +69,88 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(list(engines), ["YamaNEKO", "ama"])
         self.assertEqual(engines["YamaNEKO"].exe, EXE, "登録が同梱のエンジンを置き換えた")
 
+    def test_bundled_engines_are_added_once_at_the_front(self) -> None:
+        registry = Registry([EngineEntry("tetris", "Cold Clear 2", "cc2.exe"), EngineEntry("puyo", "ama", "ama-bridge.exe")])
+        self.assertTrue(registry.add_bundled(modes().values()))
+        self.assertEqual([e.name for e in registry.for_game("puyo")], ["YamaNEKO", "ama"])
+        self.assertEqual([e.name for e in registry.for_game("tetris")], ["KasugAI", "Cold Clear 2"])
+        self.assertEqual(sorted(registry.bundled), ["puyo/YamaNEKO", "tetris/KasugAI"])
+        self.assertFalse(registry.add_bundled(modes().values()), "2回目も入れた")
+        registry.save()
+        loaded = Registry.load()
+        self.assertEqual((loaded.engines, loaded.bundled), (registry.engines, registry.bundled))
+        # 消した同梱のエンジンは入れ直さない
+        loaded.engines = [e for e in loaded.engines if e.name != "YamaNEKO"]
+        self.assertFalse(loaded.add_bundled(modes().values()))
+        self.assertEqual([e.name for e in loaded.for_game("puyo")], ["ama"])
+
+    def test_bundled_engine_keeps_a_registration_with_the_same_name(self) -> None:
+        registry = Registry([EngineEntry("puyo", "YamaNEKO", "新しい版.exe")])
+        self.assertTrue(registry.add_bundled(modes().values()))
+        self.assertEqual([e.exe for e in registry.for_game("puyo")], ["新しい版.exe"])
+
+    def test_paths_inside_the_app_folder_are_relative(self) -> None:
+        from uedock.engine_registry import portable_path, resolve_path
+        from uedock.paths import app_root
+
+        inside = app_root() / "engines" / "kasugai" / "tetrisai-bot.exe"
+        self.assertEqual(portable_path(inside), "engines/kasugai/tetrisai-bot.exe")
+        self.assertEqual(resolve_path("engines/kasugai/tetrisai-bot.exe"), inside)
+        self.assertEqual(resolve_path(portable_path(EXE)), EXE, "本体のフォルダの外は絶対パスのまま")
+        spec = EngineSpec("KasugAI", inside, weights=app_root() / "engines" / "kasugai" / "run16.toml")
+        entry = EngineEntry.from_spec("tetris", spec)
+        self.assertEqual((entry.exe, entry.weights), ("engines/kasugai/tetrisai-bot.exe", "engines/kasugai/run16.toml"))
+        self.assertEqual(entry.spec(), spec)
+
+    def test_replaced_bundled_engine_is_used(self) -> None:
+        registry = Registry()
+        registry.add_bundled(modes().values())
+        registry.find("puyo", "YamaNEKO").exe = "C:/新しい版/yamaneko-bridge.exe"
+        engines = available_engines(modes()["puyo"], registry, PluginManager())
+        self.assertEqual(list(engines), ["YamaNEKO"])
+        self.assertEqual(engines["YamaNEKO"].exe, Path("C:/新しい版/yamaneko-bridge.exe"))
+        # 消せば一覧から無くなる
+        registry.engines = [e for e in registry.engines if e.name != "YamaNEKO"]
+        self.assertEqual(available_engines(modes()["puyo"], registry, PluginManager()), {})
+
+    def test_registered_engine_for_simulators(self) -> None:
+        from uedock.engine_registry import registered_engine
+
+        mode = modes()["tetris"]
+        self.assertEqual(registered_engine(mode, "KasugAI").exe, EXE, "登録へ入れる前は同梱のもの")
+        registry = Registry()
+        registry.add_bundled(modes().values())
+        registry.find("tetris", "KasugAI").exe = "C:/新しい版/tetrisai-bot.exe"
+        registry.save()
+        self.assertEqual(registered_engine(mode, "KasugAI").exe, Path("C:/新しい版/tetrisai-bot.exe"))
+        registry.engines = []
+        registry.save()
+        self.assertIsNone(registered_engine(mode, "KasugAI"), "消したのに同梱のものを返した")
+
+    def test_simulators_use_the_replaced_version(self) -> None:
+        """シミュレーター(エンジンを指定しない ColdClearClient・AmaClient)も、登録で差し替えた版を使う。"""
+        from uedock.games import puyo, tetris
+        from uedock.games.puyo.engine.ama_client import YAMANEKO_BRIDGE_EXE, resolve_bridge_exe
+        from uedock.games.tetris.engine import cold_clear_client
+
+        self.assertEqual(resolve_bridge_exe(), YAMANEKO_BRIDGE_EXE)
+        self.assertEqual(cold_clear_client.engine_exe(), cold_clear_client.KASUGAI_EXE)
+        registry = Registry()
+        registry.add_bundled([puyo.MODE, tetris.MODE])
+        weights = isolation.ROOT / "new.toml"
+        weights.write_text("", encoding="utf-8")
+        registry.find("puyo", "YamaNEKO").exe = "C:/新しい版/yamaneko-bridge.exe"
+        kasugai = registry.find("tetris", "KasugAI")
+        kasugai.exe, kasugai.weights = "C:/新しい版/tetrisai-bot.exe", str(weights)
+        registry.save()
+        self.assertEqual(resolve_bridge_exe(), Path("C:/新しい版/yamaneko-bridge.exe"))
+        self.assertEqual(cold_clear_client.engine_exe(), Path("C:/新しい版/tetrisai-bot.exe"))
+        self.assertEqual(cold_clear_client.engine_weights(), weights)
+        # 登録から消してあれば同梱のもの
+        Registry([], registry.bundled).save()
+        self.assertEqual(resolve_bridge_exe(), YAMANEKO_BRIDGE_EXE)
+        self.assertEqual(cold_clear_client.engine_exe(), cold_clear_client.KASUGAI_EXE)
+
     def test_bundled_engine_falls_back_to_dev_build_only_when_missing(self) -> None:
         dev = Path("dev.exe")
         self.assertEqual(bundled_engine("x/a.exe", dev), dev)
@@ -115,6 +197,11 @@ class TestSideSelection(unittest.TestCase):
         # 登録を消したら同梱の既定に戻る
         mode, engine = selection.resolve("1p", modes(), Registry(), PluginManager())
         self.assertEqual((mode.id, engine.name), ("tetris", "KasugAI"))
+        # 同梱の既定も登録から消されていれば、一覧の先頭
+        only_cc2 = Registry([EngineEntry("tetris", "Cold Clear 2", str(EXE))], ["tetris/KasugAI"])
+        selection.set_engine("1p", "tetris", "無いエンジン")
+        mode, engine = selection.resolve("1p", modes(), only_cc2, PluginManager())
+        self.assertEqual(engine.name, "Cold Clear 2")
         self.assertEqual(selection.resolve("2p", modes(), registry, PluginManager()), (None, None))
         # プラグインを無効にしてゲームモードが無くなった時
         selection.set_game("solo", "swap")

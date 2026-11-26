@@ -148,9 +148,18 @@ def board_state_to_tbp_board(board: BoardState, tbp_rows: int = 40) -> list[list
     return tbp_board
 
 
+def _registered_kasugai():  # noqa: ANN202
+    """登録にある KasugAI(新しい版に差し替えていればそれ)。登録から消されていれば None。"""
+    from uedock.engine_registry import registered_engine
+    from uedock.games.tetris import KASUGAI, MODE
+
+    return registered_engine(MODE, KASUGAI.name)
+
+
 def engine_exe() -> Path:
-    """エンジンを指定しない時に使う思考エンジンの実行ファイル(同梱の KasugAI)。"""
-    return KASUGAI_EXE
+    """エンジンを指定しない時に使う思考エンジンの実行ファイル(登録にある KasugAI。消されていれば同梱のもの)。"""
+    spec = _registered_kasugai()
+    return KASUGAI_EXE if spec is None else spec.exe
 
 
 def cold_clear_engine() -> tuple[Path, Path | None]:
@@ -159,8 +168,10 @@ def cold_clear_engine() -> tuple[Path, Path | None]:
 
 
 def engine_weights() -> Path | None:
-    """エンジンを指定しない時に --config で渡す評価の重み(同梱の KasugAI の重み。無ければ渡さない)。"""
-    return KASUGAI_WEIGHTS if KASUGAI_WEIGHTS.exists() else None
+    """エンジンを指定しない時に --config で渡す評価の重み(登録にある KasugAI の重み。無ければ渡さない)。"""
+    spec = _registered_kasugai()
+    weights = KASUGAI_WEIGHTS if spec is None or spec.exe == KASUGAI_EXE else spec.weights
+    return weights if weights is not None and weights.exists() else None
 
 
 # 起動直後のやり取りができない時に添える案内
