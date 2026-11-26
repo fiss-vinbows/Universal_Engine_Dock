@@ -23,7 +23,7 @@ Python などを別に入れる必要はありません。
 2. zip が本物かを確かめる(任意)。PowerShell で次を実行し、リリースのページに書いてある SHA-256 と比べる
 
    ```powershell
-   Get-FileHash .\UniversalEngineDock-0.1.0.zip
+   Get-FileHash .\UniversalEngineDock-*.zip
    ```
 
 3. 確かめたら、**展開する前に** zip を右クリック →「プロパティ」→「許可する」にチェック →「OK」

@@ -81,7 +81,7 @@ The exe is not code-signed and does not have many users yet, so you may see thes
 To check that the zip is the one on the release page, compare the SHA-256 on that page with the result of this command.
 
 ```powershell
-Get-FileHash .\UniversalEngineDock-0.1.0.zip
+Get-FileHash .\UniversalEngineDock-*.zip
 ```
 
 Once you have checked it, right-click the zip **before extracting** → "Properties" → tick "Unblock".

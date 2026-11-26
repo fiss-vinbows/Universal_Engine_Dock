@@ -83,7 +83,7 @@ exe に署名が無く、利用者もまだ少ないので、次のような警�
 zip がリリースのページのものと同じかは、ページに書いた SHA-256 と、次のコマンドの結果を比べると確かめられます。
 
 ```powershell
-Get-FileHash .\UniversalEngineDock-0.1.0.zip
+Get-FileHash .\UniversalEngineDock-*.zip
 ```
 
 確かめたうえで、**展開する前に** zip を右クリック →「プロパティ」→「許可する」(ブロックの解除)にチェックを入れると、

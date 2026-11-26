@@ -22,7 +22,7 @@ You do not need to install Python or anything else.
 2. Check that the zip is genuine (optional). Run this in PowerShell and compare the result with the SHA-256 on the release page
 
    ```powershell
-   Get-FileHash .\UniversalEngineDock-0.1.0.zip
+   Get-FileHash .\UniversalEngineDock-*.zip
    ```
 
 3. Once checked, right-click the zip **before extracting** → "Properties" → tick "Unblock" → "OK"
