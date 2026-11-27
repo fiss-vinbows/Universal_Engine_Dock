@@ -232,12 +232,15 @@ def main() -> None:
     version = sys.argv[1] if len(sys.argv) > 1 else "dev"
     check_engines()
     check_bootloader()
-    pyinstaller = ROOT / "venv" / "Scripts" / "pyinstaller.exe"
-    if not pyinstaller.exists():
-        sys.exit(f"pyinstaller が入っていません(venv\\Scripts\\pip install pyinstaller): {pyinstaller}")
+    # venv の pyinstaller.exe(起動用の exe)は作った時の python.exe の場所を持つので、フォルダを動かすと動かない。
+    # この Python から python -m PyInstaller で呼ぶ
+    python = ROOT / "venv" / "Scripts" / "python.exe"
+    if subprocess.run([str(python), "-c", "import PyInstaller"], cwd=ROOT).returncode != 0:
+        sys.exit("pyinstaller が入っていません(venv\\Scripts\\python -m pip install pyinstaller)")
     VERSION_FILE.parent.mkdir(exist_ok=True)
     VERSION_FILE.write_text(str(version_info(version, PRODUCT, "UniversalEngineDock.exe", PRODUCT)), encoding="utf-8")
-    subprocess.run([str(pyinstaller), "--noconfirm", "--clean", str(ROOT / "UniversalEngineDock.spec")], check=True, cwd=ROOT)
+    subprocess.run([str(python), "-m", "PyInstaller", "--noconfirm", "--clean", str(ROOT / "UniversalEngineDock.spec")],
+                   check=True, cwd=ROOT)
 
     # 利用者が触るファイル・外部の実行ファイルは exe と同じフォルダに置く(uedock/paths.py の app_root() 参照)
     copy_engines(DIST / "engines", version)
