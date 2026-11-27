@@ -77,6 +77,8 @@ Depending on the colors and borders of the video, it may not be read correctly.
 
 Plugins are loaded at start, so putting one in the folder is not enough. If you open "Plugins…" after putting it there, the dock tells you so.
 
+To load a plugin kept outside the Universal Engine Dock folder, choose its folder with "Add location…" in "Plugins…" (the plugin folder itself, or a folder that contains plugin folders). The added locations are kept in `config/plugin_folders.json`.
+
 ## 4. Troubleshooting
 
 | Symptom | What to check |

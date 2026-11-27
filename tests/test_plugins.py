@@ -121,6 +121,105 @@ class TestPluginLoader(unittest.TestCase):
         self.assertTrue(manager.changed_on_disk(), "消したのに気づかない")
 
 
+def write_plugin_at(folder: Path, plugin_id: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "plugin.py").write_text(
+        f'from uedock.plugin_api import Plugin\nPLUGIN = Plugin(id="{plugin_id}", name="{plugin_id}")\n', encoding="utf-8")
+    return folder
+
+
+class TestExtraPluginFolders(unittest.TestCase):
+    """Universal Engine Dock のフォルダの外の置き場所(config/plugin_folders.json)。"""
+
+    def setUp(self) -> None:
+        isolation.reset()
+        import shutil
+
+        self.outside = isolation.ROOT / "outside"
+        shutil.rmtree(self.outside, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, self.outside, True)
+
+    def test_plugin_folder_itself_and_folder_of_plugins(self) -> None:
+        from uedock.plugin_loader import load_extra_dirs, save_extra_dirs
+
+        single = write_plugin_at(self.outside / "single", "single")
+        write_plugin_at(self.outside / "many" / "one", "one")
+        write_plugin_at(self.outside / "many" / "two", "two")
+        write_plugin("swap", SWAP_PLUGIN)
+        save_extra_dirs([single, self.outside / "many", self.outside / "無い"])
+        self.assertEqual(load_extra_dirs()[:2], [single, self.outside / "many"])
+        manager = PluginManager.load()
+        self.assertEqual([p.id for p in manager.plugins], ["swap", "single", "one", "two"])
+        self.assertEqual(manager.errors, {}, "無い置き場所で止まった")
+        # 配布物の作成は plugins/ を指定するので、ほかの置き場所は読まない
+        self.assertEqual([p.id for p in PluginManager.load(plugin_dir()).plugins], ["swap"])
+
+    def test_same_plugin_in_two_places_uses_the_first(self) -> None:
+        from uedock.plugin_loader import save_extra_dirs
+
+        write_plugin("swap", SWAP_PLUGIN)
+        write_plugin_at(self.outside / "other", "swap")  # 同じ ID
+        write_plugin_at(self.outside / "folder" / "swap", "copy")  # 同じフォルダ名
+        save_extra_dirs([self.outside / "other", self.outside / "folder"])
+        manager = PluginManager.load()
+        self.assertEqual([p.id for p in manager.plugins], ["swap"])
+        self.assertEqual(len(manager.errors), 2)
+        self.assertTrue(any("もう読み込んでいます" in e for e in manager.errors.values()))
+        self.assertTrue(any("同じ名前のフォルダ" in e for e in manager.errors.values()))
+
+    def test_relative_path_and_broken_file(self) -> None:
+        from uedock.paths import app_root
+        from uedock.plugin_loader import extra_dirs_path, load_extra_dirs
+
+        extra_dirs_path().parent.mkdir(parents=True, exist_ok=True)
+        extra_dirs_path().write_text('{"folders": ["../somewhere", 3, ""]}', encoding="utf-8")
+        self.assertEqual(load_extra_dirs(), [app_root() / "../somewhere"])
+        extra_dirs_path().write_text("[壊れた", encoding="utf-8")
+        self.assertEqual(load_extra_dirs(), [])
+
+    def test_changes_in_other_locations_are_noticed(self) -> None:
+        import os
+
+        from uedock.plugin_loader import save_extra_dirs
+
+        single = write_plugin_at(self.outside / "single", "single")
+        save_extra_dirs([single])
+        manager = PluginManager.load()
+        self.assertFalse(manager.changed_on_disk())
+        later = os.stat(single / "plugin.py").st_mtime + 10
+        os.utime(single / "plugin.py", (later, later))
+        self.assertTrue(manager.changed_on_disk(), "ほかの置き場所の書き換えに気づかない")
+
+    def test_dialog_adds_and_removes_locations(self) -> None:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6 import QtWidgets
+
+        from uedock.ui.plugin_dialog import PluginDialog
+
+        _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        single = write_plugin_at(self.outside / "single", "single")
+        dialog = PluginDialog(PluginManager())
+        self.assertFalse(dialog.extra_dirs_changed())
+        self.assertTrue(dialog.extra_changed_label.isHidden())
+        self.assertIn("見つかりません", dialog.add_extra_dir(self.outside / "無い"))
+        self.assertIn("足さなくても", dialog.add_extra_dir(self._plugins()))
+        self.assertIsNone(dialog.add_extra_dir(single))
+        self.assertIn("もう足してあります", dialog.add_extra_dir(single))
+        self.assertEqual(dialog.extra_list.count(), 1)
+        self.assertTrue(dialog.extra_dirs_changed())
+        self.assertFalse(dialog.extra_changed_label.isHidden(), "再起動で読み込むことを出していない")
+        dialog.extra_list.setCurrentRow(0)
+        dialog._remove_dir()
+        self.assertEqual(dialog.extra_dirs, [])
+        self.assertFalse(dialog.extra_dirs_changed())
+
+    def _plugins(self) -> Path:
+        plugin_dir().mkdir(parents=True, exist_ok=True)
+        return plugin_dir()
+
+
 class TestBuiltinModes(unittest.TestCase):
     def test_puyo_and_tetris_with_bundled_engines(self) -> None:
         modes = {m.id: m for m in builtin_modes()}

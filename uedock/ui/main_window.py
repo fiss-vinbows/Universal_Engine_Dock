@@ -39,7 +39,7 @@ from ..game_mode import (
 from ..obs_output import ObsOutput
 from ..paths import APP_TITLE
 from ..plugin_api import FEATURE_DEBUG_LOG, FEATURE_OBS_OVERLAY
-from ..plugin_loader import PluginManager, save_disabled, set_current
+from ..plugin_loader import PluginManager, save_disabled, save_extra_dirs, set_current
 from .engine_dialog import EngineRegistryDialog
 from .obs_dialog import ObsGuideDialog
 from .plugin_dialog import PluginDialog
@@ -566,6 +566,8 @@ class MainWindow(QtWidgets.QWidget):
         dialog = PluginDialog(self.plugins, self)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             save_disabled(dialog.disabled)
+            if dialog.extra_dirs_changed():
+                save_extra_dirs(dialog.extra_dirs)  # 読み込むのは起動し直した時
             self.plugins.disabled = set(dialog.disabled)
             self.modes = all_modes(self.plugins)  # プラグインのゲームモード・エンジンが増減する
             self._add_bundled_engines()
