@@ -199,6 +199,34 @@ class TestSettingsAndMissLog(unittest.TestCase):
         for part in ("テンプレ=あり", "外したテンプレ=迷走砲", "DPC=なし", "TDTD=first", "表示手数=4"):
             self.assertIn(part, text)
 
+    def test_engine_log_text(self) -> None:
+        """使ったエンジンの実行ファイルと起動引数(重み)をログの1行にする。"""
+        from types import SimpleNamespace
+
+        from uedock.games.tetris.worker import engine_log_text
+
+        client = SimpleNamespace(command=["C:/e/tetrisai-bot.exe", "--config", "C:/w/run16.toml"])
+        self.assertEqual(engine_log_text(client),
+                         "エンジン: 実行ファイル=C:/e/tetrisai-bot.exe 起動引数=--config C:/w/run16.toml")
+        self.assertEqual(engine_log_text(SimpleNamespace(command=["cc2.exe"])),
+                         "エンジン: 実行ファイル=cc2.exe 起動引数=なし")
+        # 起動したコマンドを持たない偽物(MagicMock など)は不明とする
+        self.assertEqual(engine_log_text(MagicMock()), "エンジン: 不明")
+
+    def test_engine_text_prefers_real_engine(self) -> None:
+        """拡張のワーカーが本当のエンジン(real_engine)を別に持つ時は、渡された方ではなくそちらを書く。"""
+        from types import SimpleNamespace
+
+        real = SimpleNamespace(command=["C:/e/tetrisai-bot.exe"])
+
+        class _Extended(AssistWorker):
+            real_engine = real
+
+        plain = AssistWorker(_make_calibration(), SimpleNamespace(command=["cc2.exe"]), debug_log_path=None)
+        self.assertIn("実行ファイル=cc2.exe", plain._engine_text())
+        extended = _Extended(_make_calibration(), MagicMock(), debug_log_path=None)
+        self.assertIn("実行ファイル=C:/e/tetrisai-bot.exe", extended._engine_text())
+
     def test_continue_miss_is_logged_once(self) -> None:
         import io
 

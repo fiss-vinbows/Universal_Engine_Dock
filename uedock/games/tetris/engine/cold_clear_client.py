@@ -235,6 +235,8 @@ class ColdClearClient:
         # 開幕に目指すもの。KasugAI だけが受け付ける
         if opening and "tetrisai-bot" in exe.name:
             args += ["--opening", opening]
+        # 起動したコマンド(実行ファイルと引数)。どのエンジンで動かしたかをデバッグログの先頭に残すため
+        self.command = list(args)
         # エンジンの標準エラーも受け取る。自作エンジンは重みに問題があると理由を標準エラーに書いて
         # 終了するが、pythonw(コンソールなし)ではどこにも出ず「プロセスが終了しました」としか分からなかった。
         # エンジンは UTF-8 で書くので、文字コードも UTF-8 にする(既定の cp932 だと日本語が化ける)。

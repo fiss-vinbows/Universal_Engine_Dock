@@ -1394,6 +1394,18 @@ def recognize(
     )
 
 
+def engine_log_text(client: object) -> str:
+    """デバッグログに残す、思考エンジンの実行ファイル・起動引数(重みの --config もここに入る)。
+
+    起動したコマンド(ColdClearClient.command)を持たない時(テスト用の偽物など)は「不明」とする。
+    """
+    command = getattr(client, "command", None)
+    if not isinstance(command, (list, tuple)) or not command:
+        return "エンジン: 不明"
+    args = " ".join(command[1:]) or "なし"
+    return f"エンジン: 実行ファイル={command[0]} 起動引数={args}"
+
+
 def format_board_debug(recognition: RecognitionResult, best: ColdClearMove | None) -> str:
     """認識結果と最善手を人間が読めるテキストに変換する（実機デバッグ用）。
 
@@ -2920,6 +2932,8 @@ class AssistWorker(QtCore.QThread):
             )
             # どの設定で動かしたかをログから分かるようにする
             self._debug_log_file.write(f"----- 設定: {self._settings_text()} -----\n")
+            # どの思考エンジンで動かしたか(「エンジンの登録」で差し替えた時に、効いたかをログで確かめるため)
+            self._debug_log_file.write(f"----- {self._engine_text()} -----\n")
         try:
             while self._running:
                 try:
@@ -5384,6 +5398,13 @@ class AssistWorker(QtCore.QThread):
             f" 途中のパフェ優先={'あり' if self._pc_odds_first else 'なし'}"
             f" 表示手数={self._plan_depth} テンプレ・パフェは全手表示={'あり' if self._template_full_plan else 'なし'}"
         )
+
+    def _engine_text(self) -> str:
+        """使っている思考エンジンをログ用の1行にする。
+
+        拡張のワーカーが本当のエンジンを別に持つ時(real_engine)はそちらを書く。session.py の後始末と同じ取り方。
+        """
+        return engine_log_text(getattr(self, "real_engine", self.cold_clear))
 
     def _log_opener(self, text: str) -> None:
         if self._debug_log_file is not None:
