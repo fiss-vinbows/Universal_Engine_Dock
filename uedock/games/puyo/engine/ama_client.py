@@ -2,10 +2,10 @@
 
 ama は C++ 製の強豪ぷよぷよAIで、本プロジェクトでは 1P(連鎖構築)用の
 ビームサーチ(beam::search_multi)だけを使う。ama 本体には外部から盤面を渡す
-入口が無いため、external/ama-main/bridge/main.cpp に「標準入出力で1行1メッセージの
+入口が無いため、engines/ama-main/bridge/main.cpp に「標準入出力で1行1メッセージの
 JSONをやり取りするブリッジ」を追加してあり、このモジュールはそれと通信する。
 
-プロトコル(1行1JSON)。詳細は external/ama-main/bridge/main.cpp 冒頭のコメント参照。
+プロトコル(1行1JSON)。詳細は engines/ama-main/bridge/main.cpp 冒頭のコメント参照。
   build   : {"field", "queue"} -> {"x", "r", "score", "axis", "child", "candidates", "ms"}
   analyze : {"mode": "analyze", "field", "queue"} -> 発火したら何連鎖・何点か(凝視・点数表示用)
   battle  : {"mode": "battle", "self": Player, "enemy": Player} -> 相手を凝視した対戦思考の手
@@ -37,9 +37,9 @@ YAMANEKO_BRIDGE_EXE = bundled_engine(
     "yamaneko/engine/bin/yamaneko-bridge.exe", app_root().parent / "Puyo-YamaNEKO" / "engine" / "bin" / "yamaneko-bridge.exe"
 )
 # ama は Universal Engine Dock には同梱しない。ここは bridge="ama" と書いた時
-# (シミュレーターの比較とテスト)に探す場所: engines/ama/ に置いたもの、無ければ並べて置いた ama のビルド結果
+# (シミュレーターの比較とテスト)に探す場所: engines/ama/ に置いたもの、無ければソースの engines/ama-main のビルド結果
 AMA_BRIDGE_EXE = bundled_engine(
-    "ama/ama-bridge.exe", app_root().parent / "Puyopuyo" / "external" / "ama-main" / "bin" / "bridge" / "ama-bridge.exe"
+    "ama/ama-bridge.exe", app_root() / "engines" / "ama-main" / "bin" / "bridge" / "ama-bridge.exe"
 )
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000  # Windows のプロセスの優先度「通常以下」
 # 配ぷよ読みで YamaNEKO のブリッジに渡す起動引数: 撃つ・返す判断に相手の本当の先のツモを使い、構築は12組先まで本当のツモで読む

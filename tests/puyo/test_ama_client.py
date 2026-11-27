@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import unittest
 
+import tests.config_isolation  # noqa: F401  本番の設定(config/engines.json の登録)を読まない
 from uedock.games.puyo.engine.ama_client import AMA_BRIDGE_EXE, AmaClient, PlayerState, build_request, parse_move
 from uedock.games.puyo.engine.puyo_field import COLS, ROWS, PuyoField, xy_to_row_col
 
