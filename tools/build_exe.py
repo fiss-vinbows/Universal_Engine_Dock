@@ -2,7 +2,7 @@
 
 使い方: venv\\Scripts\\python tools\\build_exe.py [版(例 0.1.0)]
 前提: venv に pyinstaller が入っていること。同梱する思考エンジンなどが、並べて置いたリポジトリでビルド済みであること
-    - KasugAI:  ../TetrisAI/target/release/tetrisai-bot.exe と ../TetrisAI/config/weights/run16.toml
+    - KasugAI:  ../TetrisAI/target/release/tetrisai-bot.exe と ../TetrisAI/config/weights/ の run16.toml・styles.toml・b2b.toml
     - YamaNEKO: ../Puyo-YamaNEKO/engine/bin/yamaneko-bridge.exe と ../Puyo-YamaNEKO/weights/ の重み
     - 継続パフェの計算(pc-odds): ../Tetris/native/pc-odds/target/release/pc-odds.exe
 ama と Cold Clear 2 は同梱しない。
@@ -37,6 +37,10 @@ SITE_PACKAGES = ROOT / "venv" / "Lib" / "site-packages"
 ENGINE_FILES: list[tuple[Path, str]] = [
     (WORK / "TetrisAI" / "target" / "release" / "tetrisai-bot.exe", "kasugai/tetrisai-bot.exe"),
     (WORK / "TetrisAI" / "config" / "weights" / "run16.toml", "kasugai/run16.toml"),
+    # 打ち方の表(--opening の「style=名前」で、重みと同じフォルダから読む)と、表が指す重み。
+    # 表が無いと、style= を渡された KasugAI は起動してすぐ終わる
+    (WORK / "TetrisAI" / "config" / "weights" / "styles.toml", "kasugai/styles.toml"),
+    (WORK / "TetrisAI" / "config" / "weights" / "b2b.toml", "kasugai/b2b.toml"),
     (WORK / "Tetris" / "native" / "pc-odds" / "target" / "release" / "pc-odds.exe", "pc-odds/pc-odds.exe"),
     # YamaNEKO は自分の場所から ../../weights/ を読むので、元と同じ並びで置く。読むのはこの4つだけ
     (WORK / "Puyo-YamaNEKO" / "engine" / "bin" / "yamaneko-bridge.exe", "yamaneko/engine/bin/yamaneko-bridge.exe"),
