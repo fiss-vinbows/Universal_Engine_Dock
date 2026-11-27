@@ -169,14 +169,42 @@ def resized_window_rect(
     return x, y, new_w, new_h
 
 
+WM_ENTERSIZEMOVE = 0x0231
+WM_EXITSIZEMOVE = 0x0232
+
+
 def resize_client(hwnd: int, size: tuple[int, int]) -> tuple[int, int] | None:
     """ウィンドウのクライアント領域を size(物理ピクセル)にする。結果のクライアント領域の大きさを返す(できなければ None)。
-    ゲームが大きさを丸めることがあるので、1回ずれたらもう1回だけ合わせ直す。"""
+    ゲームが大きさを丸めることがあるので、1回ずれたらもう1回だけ合わせ直す。
+
+    枠をドラッグした時と同じく、変える前後に WM_ENTERSIZEMOVE・WM_EXITSIZEMOVE を送る。ぷよぷよeスポーツは
+    ドラッグの終わりの知らせを受けた時だけ新しい大きさを覚え、知らせなしに変えると、次にクリックされて手前に来た時に
+    覚えていた大きさへ戻す(2026-11-27 実機で確認)。
+    """
     if sys.platform != "win32":
         return None
     from ctypes import wintypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT,
+                                           wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+
+    def notify(message: int) -> None:
+        # ゲームが応答しない時に、こちらの画面まで固まらないよう待つ時間を区切る(SMTO_ABORTIFHUNG、1秒)
+        result = ctypes.c_size_t()
+        user32.SendMessageTimeoutW(hwnd, message, 0, 0, 0x0002, 1000, ctypes.byref(result))
+
+    notify(WM_ENTERSIZEMOVE)
+    try:
+        return _resize_client(user32, hwnd, size)
+    finally:
+        notify(WM_EXITSIZEMOVE)
+
+
+def _resize_client(user32, hwnd: int, size: tuple[int, int]) -> tuple[int, int] | None:  # noqa: ANN001
+    """resize_client の本体(ドラッグの知らせの間で、SetWindowPos で大きさを変える)。"""
+    from ctypes import wintypes
+
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                     wintypes.UINT]

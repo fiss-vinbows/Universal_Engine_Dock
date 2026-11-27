@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import tests.config_isolation  # noqa: F401  本番の設定を使わない
 from uedock.capture import game_window
@@ -91,6 +93,38 @@ class TestResizeWindow(unittest.TestCase):
             self.assertEqual(load_window_size(path), "1920×1080")
             save_window_size("1600×900", path)
             self.assertEqual(load_window_size(path), "1600×900")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows だけ")
+    def test_resize_sends_size_move_messages(self) -> None:
+        """枠のドラッグと同じく、変える前後に WM_ENTERSIZEMOVE・WM_EXITSIZEMOVE を送る(変えるのに失敗しても終わりを送る)。
+        送らないと、ぷよぷよeスポーツはクリックされた時に前の大きさへ戻す。"""
+        sent: list[tuple[str, int]] = []
+
+        class _User32:
+            class SendMessageTimeoutW:  # noqa: N801 - Win32 の名前に合わせる
+                argtypes = None
+
+                def __new__(cls, hwnd, message, *_args):  # noqa: ANN001, ANN204
+                    sent.append(("message", message))
+                    return 1
+
+        def fake_resize(_user32, _hwnd, size):  # noqa: ANN001, ANN202
+            sent.append(("resize", 0))
+            return size
+
+        def broken_resize(_user32, _hwnd, _size):  # noqa: ANN001, ANN202
+            raise OSError("失敗")
+
+        with mock.patch.object(game_window.ctypes, "WinDLL", return_value=_User32()), \
+                mock.patch.object(game_window, "_resize_client", fake_resize):
+            self.assertEqual(game_window.resize_client(1, (1600, 900)), (1600, 900))
+        enter, leave = game_window.WM_ENTERSIZEMOVE, game_window.WM_EXITSIZEMOVE
+        self.assertEqual(sent, [("message", enter), ("resize", 0), ("message", leave)])
+        sent.clear()
+        with mock.patch.object(game_window.ctypes, "WinDLL", return_value=_User32()), \
+                mock.patch.object(game_window, "_resize_client", broken_resize), self.assertRaises(OSError):
+            game_window.resize_client(1, (1600, 900))
+        self.assertEqual(sent, [("message", enter), ("message", leave)])
 
     def test_parse_client_size(self) -> None:
         self.assertEqual(parse_client_size("1600×900"), (1600, 900))
