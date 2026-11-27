@@ -17,6 +17,7 @@ from .. import i18n
 from ..assist import build_requests
 from ..capture.game_window import (
     CLIENT_SIZE_PRESETS,
+    GameWindow,
     find_game_window,
     list_windows,
     load_window_size,
@@ -47,6 +48,8 @@ from .toggle_switch import ToggleSwitch
 from .window_dialog import WindowPickDialog
 
 MISSING_SUFFIX = "(見つかりません)"
+# 検出したゲームのウィンドウでは使えないゲーム種別(例: ぷよぷよeスポーツのテトリス)に付ける印
+UNAVAILABLE_SUFFIX = "(このゲームでは使えません)"
 # 支援モードが自分で止まった(ゲームのウィンドウが動いた等)のを確かめる間隔
 SESSION_POLL_MS = 500
 
@@ -92,14 +95,27 @@ class SideBox(QtWidgets.QGroupBox):
     def engine(self) -> str:
         return self.engine_combo.currentData() or ""
 
-    def load(self, modes: dict[str, GameMode], selection: SideSelection, registry: Registry, plugins: PluginManager) -> None:
-        """選択を画面に出す。ゲーム種別に合うエンジンだけを一覧に並べる。"""
+    def load(self, modes: dict[str, GameMode], selection: SideSelection, registry: Registry, plugins: PluginManager,
+             window: GameWindow | None = None) -> None:
+        """選択を画面に出す。ゲーム種別に合うエンジンだけを一覧に並べる。
+
+        window は検出したゲームのウィンドウ。そのウィンドウでは使えないゲーム種別は、暗くして選べなくする
+        (選んであったものは選んだまま残し、印を付ける。支援モードは理由を出して始めない)。
+        """
         self._loading = True
         try:
             self.game_combo.clear()
             self.game_combo.addItem(NO_GAME_LABEL, NO_GAME)
             for mode in modes.values():
-                self.game_combo.addItem(mode.name, mode.id)
+                reason = mode.unavailable_reason(window)
+                if reason is None:
+                    self.game_combo.addItem(mode.name, mode.id)
+                    continue
+                self.game_combo.addItem(mode.name + UNAVAILABLE_SUFFIX, mode.id)
+                index = self.game_combo.count() - 1
+                item = self.game_combo.model().item(index)
+                item.setEnabled(False)
+                self.game_combo.setItemData(index, i18n.tr(reason), QtCore.Qt.ItemDataRole.ToolTipRole)
             game = selection.game(self.side)
             self.game_combo.setCurrentIndex(max(0, self.game_combo.findData(game)))
             mode = modes.get(self.game())
@@ -146,6 +162,8 @@ class MainWindow(QtWidgets.QWidget):
         self.modes: dict[str, GameMode] = all_modes(self.plugins)
         self._add_bundled_engines()
         self.sessions: list[AssistSession] = []
+        # 検出したゲームのウィンドウ(ゲーム種別の一覧で、使えないものを選べなくする用)
+        self.game_window: GameWindow | None = None
         self._simulators: list[QtWidgets.QWidget] = []  # 開いたシミュレーター(閉じるまで参照を持つ)
         self._restarting = False  # 起動し直している途中(新しいものを2つ起動しない)
         # プラグインの拡張(uedock/extension.py)。{プラグインの ID: 拡張}。呼ぶのは有効なプラグインの分だけ
@@ -262,6 +280,8 @@ class MainWindow(QtWidgets.QWidget):
         for ext in self.extensions.values():
             ext.install(self)
         self._rebuild_mode_buttons()
+        # 先にゲームのウィンドウを探す(見つかったゲームで使えないゲーム種別を、選べなくして並べる)
+        self.game_window = find_game_window()
         self._refresh_sides()
         self._refresh_window_status()
 
@@ -362,7 +382,7 @@ class MainWindow(QtWidgets.QWidget):
 
     def _refresh_sides(self) -> None:
         for box in self.side_boxes.values():
-            box.load(self.modes, self.selection, self.registry, self.plugins)
+            box.load(self.modes, self.selection, self.registry, self.plugins, self.game_window)
 
     def _open_simulator(self, entry) -> None:  # noqa: ANN001
         window = entry.open(self)
@@ -386,7 +406,7 @@ class MainWindow(QtWidgets.QWidget):
             self.selection.set_engine(side, box.game(), box.engine())
         self.selection.save()
         if game_changed:  # ゲーム種別に合うエンジンと設定項目に入れ替える
-            box.load(self.modes, self.selection, self.registry, self.plugins)
+            box.load(self.modes, self.selection, self.registry, self.plugins, self.game_window)
 
     def _on_layout_changed(self, index: int) -> None:
         self.selection.layout = self._layouts[index]
@@ -396,10 +416,19 @@ class MainWindow(QtWidgets.QWidget):
 
     def _refresh_window_status(self) -> None:
         window = find_game_window()
+        # 見つかったゲームが変わった時(ぷよぷよテトリス2 ⇔ ぷよぷよeスポーツ)は、使えるゲーム種別を出し直す
+        if self._unavailable_modes(window) != self._unavailable_modes(self.game_window):
+            self.game_window = window
+            self._refresh_sides()
+        self.game_window = window
         if window is not None:
             self.status_label.setText(f"ゲームのウィンドウ: {window.title}({window.width}×{window.height})")
         else:
             self.status_label.setText("ゲームのウィンドウが見つかりません(ゲームを起動して「ゲームのウィンドウを検出」)")
+
+    def _unavailable_modes(self, window: GameWindow | None) -> set[str]:
+        """そのウィンドウでは使えないゲームモードの ID。"""
+        return {mode.id for mode in self.modes.values() if mode.unavailable_reason(window) is not None}
 
     def _on_detect_clicked(self) -> None:
         """ゲームのウィンドウを探す。見つからなければ表示中のウィンドウから選んでもらい、次から探せるよう覚える。"""

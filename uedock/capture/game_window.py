@@ -22,6 +22,8 @@ from .screen_capture import CaptureRegion
 GAME_EXE_NAMES = ("puyopuyotetris2.exe",)
 # ウィンドウのタイトル(実機では「PuyoPuyoTetris2」。ぷよぷよeスポーツは「Puyo Puyo Champions」のことがある)
 GAME_TITLE_KEYS = ("puyopuyotetris2", "ぷよぷよテトリス2", "puyopuyochampions", "ぷよぷよeスポーツ")
+# ぷよぷよeスポーツ(ぷよぷよだけのゲーム。テトリスは無い)のタイトル
+ESPORTS_TITLE_KEYS = ("puyopuyochampions", "ぷよぷよeスポーツ")
 # メイン画面の「ゲームのウィンドウを検出」で一覧から選んだウィンドウ(実行ファイル名とタイトル)。次からはこれでも探す
 SAVED_WINDOW_PATH = config_dir() / "game_window.json"
 # 一覧に出すウィンドウの最小の大きさ(小さい道具のウィンドウを除く)
@@ -79,6 +81,12 @@ def normalize_title(title: str) -> str:
 def is_game_title(title: str) -> bool:
     norm = normalize_title(title)
     return any(key in norm for key in GAME_TITLE_KEYS)
+
+
+def is_esports_title(title: str) -> bool:
+    """ぷよぷよeスポーツのウィンドウのタイトルか。"""
+    norm = normalize_title(title)
+    return any(normalize_title(key) in norm for key in ESPORTS_TITLE_KEYS)
 
 
 def is_game_window(title: str, exe: str, saved: SavedWindow | None = None) -> bool:

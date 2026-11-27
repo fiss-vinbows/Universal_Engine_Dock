@@ -5,6 +5,9 @@
 
 ENTRIES: dict[str, str] = {
     '(見つかりません)': '(not found)',
+    '(このゲームでは使えません)': '(not available in this game)',
+    'ぷよぷよeスポーツにはテトリスがありません': 'Puyo Puyo Champions has no Tetris',
+    '{}({})。ゲーム種別を選び直してください': '{} ({}). Choose the game type again',
     '思考エンジン:': 'Engine:',
     'ゲームのウィンドウを検出': 'Detect game window',
     'Steam 版のゲームのウィンドウを探します。見つからなければ一覧から選べます(選んだものは覚えます)': "Looks for the Steam version's game window. If it is not found, you can pick it from a list (your choice is remembered)",

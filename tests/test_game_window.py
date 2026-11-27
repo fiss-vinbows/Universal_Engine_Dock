@@ -47,6 +47,14 @@ class TestFindGameWindow(unittest.TestCase):
         # ぷよぷよeスポーツの PC 版はタイトルが「Puyo Puyo Champions」のことがある
         self.assertEqual(find_game_window(windows=[_entry("Puyo Puyo Champions", "", hwnd=5)]).hwnd, 5)
 
+    def test_is_esports_title(self) -> None:
+        from uedock.capture.game_window import is_esports_title
+
+        self.assertTrue(is_esports_title("Puyo Puyo Champions"))
+        self.assertTrue(is_esports_title("ぷよぷよ™eスポーツ"))
+        self.assertFalse(is_esports_title("PuyoPuyoTetris2"))
+        self.assertFalse(is_esports_title("ぷよぷよテトリス2"))
+
     def test_saved_window_is_found(self) -> None:
         entries = [_entry("別の名前", "mygame.exe", hwnd=7)]
         self.assertIsNone(find_game_window(windows=entries))

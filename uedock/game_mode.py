@@ -125,9 +125,18 @@ class GameMode:
     # ゲームのウィンドウが見つからない時は、これで決めた位置を使う
     calibrate: Callable[[str, "QtWidgets.QWidget | None"], None] | None = None
     simulators: tuple[SimulatorEntry, ...] = ()
+    # 検出したゲームのウィンドウで、このゲームモードを使えるか(例: ぷよぷよeスポーツにテトリスは無い)。
+    # 使えない時は、その理由(画面に出す文)を返す。None・空文字は使える。窓口が None なら、どのウィンドウでも使える
+    unsupported_reason: Callable[["GameWindow"], str | None] | None = None
 
     def default_engine(self) -> str:
         return self.builtin_engines[0].name if self.builtin_engines else ""
+
+    def unavailable_reason(self, window: "GameWindow | None") -> str | None:
+        """このウィンドウでは使えない理由。使える時・ウィンドウが見つからない時(キャプチャボード)は None。"""
+        if window is None or self.unsupported_reason is None:
+            return None
+        return self.unsupported_reason(window) or None
 
 
 def builtin_modes() -> list[GameMode]:

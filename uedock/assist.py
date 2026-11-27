@@ -33,6 +33,9 @@ def build_requests(
         label = SIDE_LABELS[side]
         if mode.start_assist is None:
             return [], f"{mode.name}の支援モードは、まだ用意されていません({label})"
+        reason = mode.unavailable_reason(game_window)
+        if reason is not None:
+            return [], f"{reason}({label})。ゲーム種別を選び直してください"
         if engine is None:
             return [], f"{label} の思考エンジンが選ばれていません"
         if not engine.exists():

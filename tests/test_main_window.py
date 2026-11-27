@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import tests.config_isolation as isolation  # noqa: E402
-from PyQt6 import QtWidgets  # noqa: E402
+from PyQt6 import QtCore, QtWidgets  # noqa: E402
 
 from uedock.engine_registry import EngineEntry, Registry, SideSelection, portable_path  # noqa: E402
 from uedock.game_mode import LAYOUT_SOLO, NO_GAME, EngineSpec, GameMode, SimulatorEntry  # noqa: E402
@@ -101,6 +101,42 @@ class MainWindowTest(unittest.TestCase):
         self.assertFalse(window.start_assist())
         self.assertIn("支援するサイドがありません", self.warnings[-1])
         self.assertFalse(window.assist_running())
+
+    def test_tetris_cannot_be_chosen_on_esports(self) -> None:
+        from uedock.capture.game_window import GameWindow
+
+        esports = GameWindow(5, "Puyo Puyo Champions", 0, 0, 1920, 1080)
+        pt2 = GameWindow(6, "PuyoPuyoTetris2", 0, 0, 1920, 1080)
+        selection = SideSelection(games={"1p": "puyo", "2p": "tetris"})
+        selection.save()
+        main_window.find_game_window.return_value = esports
+        window = MainWindow(PluginManager())
+        self.addCleanup(window.close)
+        for side in ("1p", "2p", "solo"):
+            combo = window.side_boxes[side].game_combo
+            index = combo.findData("tetris")
+            self.assertFalse(combo.model().item(index).isEnabled(), f"ぷよぷよeスポーツでテトリスを選べる({side})")
+            self.assertEqual(combo.itemText(index), "テトリス" + main_window.UNAVAILABLE_SUFFIX)
+            self.assertIn("テトリスがありません", combo.itemData(index, QtCore.Qt.ItemDataRole.ToolTipRole))
+            self.assertTrue(combo.model().item(combo.findData("puyo")).isEnabled())
+        # 前に選んであったテトリスは選んだまま残す(ぷよぷよテトリス2 に戻ると、そのまま使える)。支援モードは理由を出して始めない
+        self.assertEqual(window.side_boxes["2p"].game(), "tetris")
+        self.assertFalse(window.start_assist())
+        self.assertIn("ぷよぷよeスポーツにはテトリスがありません(2P)", self.warnings[-1])
+        self.assertEqual(SideSelection.load().game("2p"), "tetris", "選んであったゲーム種別を消した")
+        # ぷよぷよテトリス2 を検出し直すと、また選べる
+        main_window.find_game_window.return_value = pt2
+        window.detect_btn.click()
+        combo = window.side_boxes["2p"].game_combo
+        self.assertTrue(combo.model().item(combo.findData("tetris")).isEnabled())
+        self.assertEqual(combo.itemText(combo.findData("tetris")), "テトリス")
+        self.assertEqual(window.side_boxes["2p"].game(), "tetris")
+        # ウィンドウが見つからない時(キャプチャボード)は、どれも選べる
+        # (「検出」ボタンは見つからない時に一覧を開くので、表示を出し直すところだけを呼ぶ)
+        main_window.find_game_window.return_value = None
+        window._refresh_window_status()
+        combo = window.side_boxes["2p"].game_combo
+        self.assertTrue(combo.model().item(combo.findData("tetris")).isEnabled())
 
     def test_changing_game_switches_engines_and_is_saved(self) -> None:
         registry = Registry([EngineEntry("tetris", "Cold Clear 2", str(EXE)), EngineEntry("puyo", "ama", "無い.exe")])

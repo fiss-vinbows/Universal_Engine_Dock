@@ -62,6 +62,13 @@ def _open_ren(parent):  # noqa: ANN001, ANN202, ARG001
     return _independent(RenWindow())
 
 
+def _unsupported_reason(window) -> str | None:  # noqa: ANN001
+    """ぷよぷよeスポーツはぷよぷよだけのゲームなので、テトリスは使えない。"""
+    from uedock.capture.game_window import is_esports_title
+
+    return "ぷよぷよeスポーツにはテトリスがありません" if is_esports_title(window.title) else None
+
+
 MODE = GameMode(
     id="tetris",
     name="テトリス",
@@ -74,4 +81,5 @@ MODE = GameMode(
         SimulatorEntry("テトリスのシミュレーター", _open_practice),
         SimulatorEntry("無限中あけREN", _open_ren),
     ),
+    unsupported_reason=_unsupported_reason,
 )
